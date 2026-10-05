@@ -1,11 +1,12 @@
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
+import { resolveProviderKey } from './key-vault';
 export class ApiError extends Error { constructor(public status:number, message:string) {super(message);} }
 export function db():D1Database {const binding=(env as unknown as {DB?:D1Database}).DB;if(!binding)throw new ApiError(503,'노트 저장소에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');return binding;}
 export function bucket():R2Bucket {const binding=(env as unknown as {BUCKET?:R2Bucket}).BUCKET;if(!binding)throw new ApiError(503,'음성 저장소에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');return binding;}
 export function owner(request:Request, write=false) {const user=request.headers.get('oai-authenticated-user-id');if(!user)throw new ApiError(401,'ChatGPT에 로그인한 뒤 이 웹을 열어주세요.');if(write){const origin=request.headers.get('origin');if(origin && origin!==new URL(request.url).origin)throw new ApiError(403,'허용되지 않은 요청입니다.');}return user;}
-export function apiKey(request:Request) {const key=request.headers.get('x-deepseek-key')?.trim();if(!key||key.length<20||key.length>512)throw new ApiError(400,'상단의 AI 연결에서 DeepSeek API 키를 입력하세요.');return key;}
-export function speechKey(request:Request) {const key=request.headers.get('x-assemblyai-key')?.trim();if(!key||key.length<20||key.length>512)throw new ApiError(400,'상단의 API 연결에서 AssemblyAI API 키를 입력하세요.');return key;}
+export async function apiKey(request:Request) {return resolveProviderKey(request,'deepseek','x-deepseek-key','DeepSeek');}
+export async function speechKey(request:Request) {return resolveProviderKey(request,'assemblyai','x-assemblyai-key','AssemblyAI');}
 export async function jsonBody(request:Request) {const bytes=await boundedBody(request, 64*1024);try{return JSON.parse(new TextDecoder().decode(bytes));}catch{throw new ApiError(400,'입력 형식을 확인해주세요.');}}
 export async function boundedBody(request:Request,max:number) {const reader=request.body?.getReader();if(!reader)throw new ApiError(400,'빈 파일입니다.');let length=0;const buffers:Uint8Array[]=[];while(true){const {done,value}=await reader.read();if(done)break;length+=value.byteLength;if(length>max){await reader.cancel();throw new ApiError(413,'파일이 허용 크기를 초과했습니다.');}buffers.push(value);}const bytes=new Uint8Array(length);let offset=0;for(const b of buffers){bytes.set(b,offset);offset+=b.length;}return bytes;}
 export function respondError(e:unknown) {if(e instanceof ApiError)return Response.json({error:e.message},{status:e.status});if(e instanceof z.ZodError)return Response.json({error:'입력값을 확인해주세요.'},{status:400});console.error('lecture request failed', e instanceof Error?e.name:'unknown');return Response.json({error:'처리를 완료하지 못했습니다. 입력은 유지됩니다. 다시 시도하세요.'},{status:500});}

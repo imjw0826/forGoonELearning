@@ -1,4 +1,6 @@
 export type Notes = { overview:string; concepts:{term:string;explanation:string}[]; sections:{title:string;body:string}[]; review:string[]; questions:{question:string;answer:string}[] };
+export type KeyProvider = 'deepseek'|'fal'|'assemblyai';
+export type KeySettings = {storage_ready:boolean;providers:Record<KeyProvider,boolean>};
 export type Lecture = {id:string;title:string;filename:string;bytes:number;duration:number;total:number;status:string;created:number;uploaded:number;completed:number;cloud?:number;provider?:string;provider_expires_at?:number|null;source_ready?:number;source_deleted_at?:number|null;provider_deleted_at?:number|null;uploaded_bytes?:number;parts?:number[];remote_status?:string|null;notes?:string|null;chunks?:{ordinal:number;transcript:string|null;outline:string|null;corrected_transcript?:string|null;correction_audit?:string|null;start_seconds?:number|null}[]};
 export type MediaCleanup = {source:'deleted'|'pending'|'not_applicable';provider:'deleted'|'pending'|'not_applicable'|'scheduled'};
 export const MAX_MEDIA = 2 * 1024 * 1024 * 1024;

@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { resolveProviderKey } from './key-vault';
 import { ApiError, bucket, db } from './server';
 import type { SpeechResult } from './speech';
 
 export const FAL_PART_BYTES=10*1024*1024;
 const LIFECYCLE=JSON.stringify({expiration_duration_seconds:86400,initial_acl:{default:'forbid',rules:[]}});
 export type WhisperJob={lecture_id:string;source_key:string;media_type:string;upload_url:string|null;remote_id:string|null;remote_status:string|null;transfer_url:string|null;transfer_parts:string|null;transfer_ready:number;provider_expires_at:number|null};
-export function falKey(request:Request){const key=request.headers.get('x-fal-key')?.trim();if(!key||key.length<20||key.length>512)throw new ApiError(400,'API 연결에서 fal API 키를 입력하세요.');return key;}
+export async function falKey(request:Request){return resolveProviderKey(request,'fal','x-fal-key','fal');}
 function cdnUrl(value:string){let url:URL;try{url=new URL(value);}catch{throw new ApiError(502,'Whisper 파일 주소를 확인하지 못했습니다.');}if(url.protocol!=='https:'||!/^v3[a-z0-9]*\.fal\.media$/.test(url.hostname)||url.username||url.password)throw new ApiError(502,'Whisper 파일 주소를 확인하지 못했습니다.');return url;}
 async function checkedFetch(url:string,options:RequestInit={}){
   let response:Response;try{response=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(120000)});}catch{throw new ApiError(504,'Whisper API 연결이 지연됩니다. 저장된 강의에서 이어서 시도하세요.');}

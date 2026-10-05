@@ -29,3 +29,8 @@ export const uploadParts = sqliteTable("upload_parts", {
   partNumber: integer("part_number").notNull(), etag: text("etag").notNull(),
   bytes: integer("bytes").notNull(),
 }, t => [primaryKey({columns:[t.lectureId,t.partNumber]})]);
+export const providerCredentials = sqliteTable("provider_credentials", {
+  owner: text("owner").notNull(), provider: text("provider").notNull(),
+  ciphertext: text("ciphertext").notNull(), iv: text("iv").notNull(),
+  version: integer("version").notNull().default(1), updated: integer("updated").notNull(),
+}, t => [primaryKey({columns:[t.owner,t.provider]})]);

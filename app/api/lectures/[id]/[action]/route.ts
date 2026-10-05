@@ -76,8 +76,8 @@ export async function POST(request:Request,context:Context){try{
     if(lecture.notes)return Response.json({status:'completed'},{headers:noCache});
     const job=await getJob(id);if(!job?.ready)throw new ApiError(409,'먼저 파일 업로드를 완료해주세요.');
     if(job.remote_id)return Response.json({status:job.remote_status||'processing'},{headers:noCache});
-    if(job.provider==='fal')return Response.json(await advanceWhisper(job,Number(lecture.bytes),falKey(request)),{headers:noCache});
-    const key=speechKey(request);
+    if(job.provider==='fal')return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request)),{headers:noCache});
+    const key=await speechKey(request);
     const lock=await db().prepare('UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_id IS NULL').bind(Date.now()+2100000,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'음성 인식 요청을 이미 준비 중입니다. 잠시 후 이어서 만들기를 눌러주세요.');
     try{
@@ -100,10 +100,10 @@ export async function POST(request:Request,context:Context){try{
   }
   if(action==='speech-poll'){
     const job=await getJob(id);
-    if(job?.provider==='fal'&&!job.remote_id)return Response.json(await advanceWhisper(job,Number(lecture.bytes),falKey(request)),{headers:noCache});
+    if(job?.provider==='fal'&&!job.remote_id)return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request)),{headers:noCache});
     if(!job?.remote_id)throw new ApiError(409,'먼저 음성 인식을 시작해주세요.');
     if(job.remote_status==='completed')return Response.json({status:'completed'},{headers:noCache});
-    const result=job.provider==='fal'?await pollWhisper(falKey(request),job.remote_id):await speechRequest<SpeechResult>(speechKey(request),`/transcript/${job.remote_id}`);
+    const result=job.provider==='fal'?await pollWhisper(await falKey(request),job.remote_id):await speechRequest<SpeechResult>(await speechKey(request),`/transcript/${job.remote_id}`);
     if(result.status==='error'){
       await db().batch([db().prepare("UPDATE media_jobs SET remote_status='error' WHERE lecture_id=?").bind(id),db().prepare("UPDATE lectures SET status='error' WHERE id=?").bind(id)]);
       throw new ApiError(422,'외부 음성 인식이 실패했습니다. 음성 인식 API의 처리 내역을 확인한 후, 음성이 있는 지원 형식의 파일로 다시 올려주세요.');
@@ -123,7 +123,7 @@ export async function POST(request:Request,context:Context){try{
   }
   if(action==='correct'){
     if(lecture.notes)throw new ApiError(409,'완성된 노트의 대본은 그대로 보관합니다.');
-    const key=apiKey(request),{ordinal}=z.object({ordinal:z.number().int().min(0).max(179)}).parse(await jsonBody(request));
+    const key=await apiKey(request),{ordinal}=z.object({ordinal:z.number().int().min(0).max(179)}).parse(await jsonBody(request));
     const row=await db().prepare('SELECT transcript,corrected_transcript FROM chunks WHERE lecture_id=? AND ordinal=?').bind(id,ordinal).first<{transcript:string|null;corrected_transcript:string|null}>();
     if(!row?.transcript)throw new ApiError(409,'원문 전사가 완료된 뒤 교정할 수 있습니다.');
     if(row.corrected_transcript)return Response.json({done:true},{headers:noCache});
@@ -137,7 +137,7 @@ export async function POST(request:Request,context:Context){try{
     }finally{await db().prepare('UPDATE chunks SET lock_until=0 WHERE lecture_id=? AND ordinal=?').bind(id,ordinal).run();}
   }
   if(action==='transcribe'){
-    const key=apiKey(request),{ordinal}=z.object({ordinal:z.number().int().min(0).max(179)}).parse(await jsonBody(request));
+    const key=await apiKey(request),{ordinal}=z.object({ordinal:z.number().int().min(0).max(179)}).parse(await jsonBody(request));
     const row=await db().prepare('SELECT * FROM chunks WHERE lecture_id=? AND ordinal=?').bind(id,ordinal).first<{transcript:string|null;corrected_transcript:string|null;outline:string|null}>();
     if(!row?.transcript)throw new ApiError(409,'전사문이 준비되지 않았습니다. 이전 방식의 미완료 강의는 원본 파일을 새 강의로 올려주세요.');
     if(!row.corrected_transcript)throw new ApiError(409,'문맥 교정을 완료한 뒤 구간을 정리할 수 있습니다.');
@@ -152,7 +152,7 @@ export async function POST(request:Request,context:Context){try{
   }
   if(action==='summarize'){
     if(lecture.notes)return Response.json({notes:JSON.parse(String(lecture.notes)),cleanup:await cleanupMedia(id,user,request)},{headers:noCache});
-    const key=apiKey(request),rows=await db().prepare('SELECT ordinal,outline,corrected_transcript,start_seconds FROM chunks WHERE lecture_id=? ORDER BY ordinal').bind(id).all();
+    const key=await apiKey(request),rows=await db().prepare('SELECT ordinal,outline,corrected_transcript,start_seconds FROM chunks WHERE lecture_id=? ORDER BY ordinal').bind(id).all();
     if(!Number(lecture.total)||rows.results.length!==Number(lecture.total)||rows.results.some(r=>!r.outline||!r.corrected_transcript))throw new ApiError(409,'모든 전사 구간이 정리된 뒤 노트를 만들 수 있습니다.');
     const lock=await db().prepare("UPDATE lectures SET status='summarizing',lock_until=? WHERE id=? AND lock_until<? AND notes IS NULL").bind(Date.now()+600000,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'학습 노트를 이미 생성 중입니다. 잠시 후 다시 시도하세요.');

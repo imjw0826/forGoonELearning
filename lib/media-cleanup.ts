@@ -21,7 +21,7 @@ export async function cleanupMedia(id:string,user:string,request:Request):Promis
   }
   if(job.provider!=='fal'&&job.remote_id&&!job.provider_deleted_at){
     try{
-      const key=speechKey(request);
+      const key=await speechKey(request);
       await speechRequest(key,`/transcript/${job.remote_id}`,{method:'DELETE'});
       await db().prepare('UPDATE media_jobs SET provider_deleted_at=?,upload_url=NULL WHERE lecture_id=?').bind(Date.now(),id).run();
       result.provider='deleted';
