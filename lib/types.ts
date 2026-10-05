@@ -1,0 +1,8 @@
+export type Notes = { overview:string; concepts:{term:string;explanation:string}[]; sections:{title:string;body:string}[]; review:string[]; questions:{question:string;answer:string}[] };
+export type Lecture = {id:string;title:string;filename:string;bytes:number;duration:number;total:number;status:string;created:number;uploaded:number;completed:number;cloud?:number;provider?:string;provider_expires_at?:number|null;source_ready?:number;source_deleted_at?:number|null;provider_deleted_at?:number|null;uploaded_bytes?:number;parts?:number[];remote_status?:string|null;notes?:string|null;chunks?:{ordinal:number;transcript:string|null;outline:string|null;corrected_transcript?:string|null;correction_audit?:string|null;start_seconds?:number|null}[]};
+export type MediaCleanup = {source:'deleted'|'pending'|'not_applicable';provider:'deleted'|'pending'|'not_applicable'|'scheduled'};
+export const MAX_MEDIA = 2 * 1024 * 1024 * 1024;
+export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
+export const CHUNK_SECONDS = 600;
+export function timeLabel(seconds:number) {const m=Math.floor(seconds/60);return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;}
+export function exportNotes(lecture:Lecture, notes:Notes) {return `# ${lecture.title}\n\n## 전체 요약\n${notes.overview}\n\n## 핵심 개념\n${notes.concepts.map(c=>`### ${c.term}\n${c.explanation}`).join('\n\n')}\n\n## 강의 내용\n${notes.sections.map(c=>`### ${c.title}\n${c.body}`).join('\n\n')}\n\n## 복습 포인트\n${notes.review.map(c=>`- ${c}`).join('\n')}\n\n## 확인 질문\n${notes.questions.map(c=>`**${c.question}**\n${c.answer}`).join('\n\n')}\n\n---\n음성 전사에 기반한 AI 요약입니다. 중요한 내용은 원본 강의와 대조하세요.\n`;}
