@@ -1,5 +1,6 @@
 export type ExtractStatus = "idle" | "transcribing" | "correcting" | "done";
 export type SummaryStatus = "idle" | "planning" | "writing" | "done";
+export type AudioStatus = "none" | "uploading" | "converting" | "ready" | "error";
 
 export interface Course {
   id: string;
@@ -14,6 +15,8 @@ export interface Lecture {
   title: string;
   source_filename: string | null;
   audio_path: string | null;
+  audio_status: AudioStatus;
+  audio_error: string | null;
   extract_status: ExtractStatus;
   extract_error: string | null;
   fal_request_id: string | null;
@@ -33,7 +36,7 @@ export interface Lecture {
 /** Lecture row without the heavy text columns (for lists). */
 export type LectureSummary = Pick<
   Lecture,
-  "id" | "course_id" | "session_no" | "title" | "audio_path" | "extract_status" | "summary_status" | "created_at"
+  "id" | "course_id" | "session_no" | "title" | "audio_path" | "audio_status" | "extract_status" | "summary_status" | "created_at"
 >;
 
 export interface Material {
@@ -66,13 +69,15 @@ export interface NoteSection {
 
 /** Progress snapshot returned by the pipeline step endpoints. */
 export interface PipelineState {
+  audio_status: AudioStatus;
+  audio_error: string | null;
   extract_status: ExtractStatus;
   extract_error: string | null;
   summary_status: SummaryStatus;
   summary_error: string | null;
   /** e.g. "교정 3/12" */
   progress: { done: number; total: number } | null;
-  /** true while the client should keep calling the step endpoint */
+  /** true while a worker job is in progress */
   running: boolean;
 }
 

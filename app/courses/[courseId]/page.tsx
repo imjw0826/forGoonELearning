@@ -12,7 +12,7 @@ export default async function CoursePage({ params }: { params: Promise<{ courseI
 
   const { data: lectures } = await db()
     .from("lectures")
-    .select("id, course_id, session_no, title, audio_path, extract_status, summary_status, created_at")
+    .select("id, course_id, session_no, title, audio_path, audio_status, extract_status, summary_status, created_at")
     .eq("course_id", courseId)
     .order("session_no")
     .order("created_at");

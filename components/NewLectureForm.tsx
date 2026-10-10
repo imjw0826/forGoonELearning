@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
 import { isVideo, needsConversion } from "@/lib/client/audio";
-import { processAndUploadAudio, uploadMaterial, type AudioStage } from "@/lib/client/upload";
+import { processAndUploadAudio, uploadMaterial, type AudioMode, type AudioStage } from "@/lib/client/upload";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useAccess } from "./AccessProvider";
 import { ProgressBar } from "./ProgressBar";
@@ -23,6 +23,7 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
   const [title, setTitle] = useState("");
   const [media, setMedia] = useState<File | null>(null);
   const [materials, setMaterials] = useState<File[]>([]);
+  const [mode, setMode] = useState<AudioMode>("browser");
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<Record<StepKey, StepState>>({ create: "pending", convert: "pending", upload: "pending", materials: "pending" });
@@ -31,6 +32,7 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
   const [error, setError] = useState<string | null>(null);
   const [lectureId, setLectureId] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [activeMode, setActiveMode] = useState<AudioMode>("browser");
 
   // Warn before closing the tab while converting/uploading.
   useEffect(() => {
@@ -48,7 +50,9 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
     setError(null);
     setWarnings([]);
     const convert = needsConversion(media);
+    let effectiveMode: AudioMode = convert ? mode : "browser";
     setSteps({ create: "active", convert: convert ? "pending" : "skip", upload: "pending", materials: materials.length ? "pending" : "skip" });
+    setActiveMode(effectiveMode);
 
     let id = lectureId;
     try {
@@ -61,21 +65,37 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
       }
       mark("create", "done");
 
-      await processAndUploadAudio(id, media, (s: AudioStage) => {
-        if (s.stage === "convert") {
-          mark("convert", "active");
-          const p = s.progress;
-          setRatio(p.ratio);
-          setDetail(p.duration ? `${formatTime(p.seconds)} / ${formatTime(p.duration)}` : p.seconds ? formatTime(p.seconds) : "ffmpeg 불러오는 중…");
-        } else if (s.stage === "upload") {
-          if (convert) mark("convert", "done");
-          mark("upload", "active");
-          setRatio(s.ratio);
-          setDetail(`${Math.round(s.ratio * 100)}%`);
-        } else {
-          mark("upload", "done");
-        }
-      });
+      await processAndUploadAudio(
+        id,
+        media,
+        (s: AudioStage) => {
+          if (s.stage === "convert") {
+            mark("convert", "active");
+            const p = s.progress;
+            setRatio(p.ratio);
+            setDetail(p.duration ? `${formatTime(p.seconds)} / ${formatTime(p.duration)}` : p.seconds ? formatTime(p.seconds) : "ffmpeg 불러오는 중…");
+          } else if (s.stage === "fallback") {
+            effectiveMode = "server";
+            setActiveMode("server");
+            mark("convert", "pending");
+            setWarnings((w) => [...w, `브라우저 변환에 실패해 서버(Railway)에서 변환합니다. (${s.reason})`]);
+          } else if (s.stage === "upload") {
+            if (effectiveMode === "browser" && convert) mark("convert", "done");
+            mark("upload", "active");
+            setRatio(s.ratio);
+            setDetail(`${Math.round(s.ratio * 100)}%`);
+          } else if (s.stage === "server-convert") {
+            mark("upload", "done");
+            mark("convert", "active");
+            setRatio(null);
+            setDetail("");
+          } else {
+            mark("upload", "done");
+            if (convert) mark("convert", "done");
+          }
+        },
+        effectiveMode,
+      );
 
       if (materials.length) {
         mark("materials", "active");
@@ -115,7 +135,7 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
         <ArrowLeft className="h-4 w-4" /> {courseName}
       </Link>
       <h1 className="mt-3 text-2xl font-bold tracking-tight">강의 추가</h1>
-      <p className="mt-1 text-sm text-zinc-500">영상을 올리면 브라우저에서 바로 음성(mp3)만 추출해 업로드합니다. 원본 영상은 서버로 전송되지 않아요.</p>
+      <p className="mt-1 text-sm text-zinc-500">영상을 올리면 음성(mp3)만 추출해 저장하고, 추출·요약은 서버(Railway)에서 진행돼요.</p>
 
       <form onSubmit={submit} className="mt-6 space-y-6">
         <div className="grid grid-cols-[6rem_1fr] gap-3">
@@ -151,7 +171,7 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{media.name}</p>
                 <p className="text-xs text-zinc-500">
-                  {formatBytes(media.size)} · {needsConversion(media) ? "브라우저에서 mp3로 변환 후 업로드" : "mp3 그대로 업로드"}
+                  {formatBytes(media.size)} · {needsConversion(media) ? "mp3로 변환 후 저장" : "mp3 그대로 업로드"}
                 </p>
               </div>
               {!started && (
@@ -169,6 +189,16 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
             </label>
           )}
         </div>
+
+        {media && needsConversion(media) && (
+          <fieldset disabled={started}>
+            <span className="text-sm font-medium text-zinc-700">음성 추출 방식</span>
+            <div className="mt-1 grid gap-2 sm:grid-cols-2">
+              <ModeOption checked={mode === "browser"} onChange={() => setMode("browser")} title="브라우저에서 변환 (권장)" desc="영상을 올리지 않고 이 컴퓨터에서 mp3만 뽑아 올려요. 빠르고 데이터를 아껴요." />
+              <ModeOption checked={mode === "server"} onChange={() => setMode("server")} title="서버에서 변환" desc="원본 영상을 Railway 서버로 올려 ffmpeg로 변환해요. 브라우저 변환이 안 될 때 사용하세요." />
+            </div>
+          </fieldset>
+        )}
 
         {/* Materials */}
         <div>
@@ -210,10 +240,19 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
         {started && (
           <div className="space-y-3 rounded-xl border border-zinc-200 p-4">
             <Step state={steps.create} label="강의 생성" />
-            <Step state={steps.convert} label="영상에서 음성 추출 (ffmpeg)" detail={steps.convert === "active" ? detail : undefined} ratio={steps.convert === "active" ? ratio : undefined} />
-            <Step state={steps.upload} label="오디오 업로드" detail={steps.upload === "active" ? detail : undefined} ratio={steps.upload === "active" ? ratio : undefined} />
+            {activeMode === "browser" ? (
+              <>
+                <Step state={steps.convert} label="영상에서 음성 추출 (브라우저 ffmpeg)" detail={steps.convert === "active" ? detail : undefined} ratio={steps.convert === "active" ? ratio : undefined} />
+                <Step state={steps.upload} label="오디오 업로드" detail={steps.upload === "active" ? detail : undefined} ratio={steps.upload === "active" ? ratio : undefined} />
+              </>
+            ) : (
+              <>
+                <Step state={steps.upload} label="원본 영상을 서버(Railway)로 업로드" detail={steps.upload === "active" ? detail : undefined} ratio={steps.upload === "active" ? ratio : undefined} />
+                <Step state={steps.convert} label="서버에서 음성 추출 (ffmpeg)" ratio={steps.convert === "active" ? null : undefined} />
+              </>
+            )}
             <Step state={steps.materials} label="강의자료 업로드 · 텍스트 추출" detail={steps.materials === "active" ? detail : undefined} ratio={steps.materials === "active" ? ratio : undefined} />
-            {running && <p className="pt-1 text-xs text-zinc-500">변환이 끝날 때까지 이 탭을 닫지 마세요. 1~2GB 영상은 몇 분 걸릴 수 있어요.</p>}
+            {running && <p className="pt-1 text-xs text-zinc-500">업로드가 끝날 때까지 이 탭을 닫지 마세요. 1~2GB 영상은 몇 분 걸릴 수 있어요.</p>}
           </div>
         )}
 
@@ -267,5 +306,17 @@ function Step({ state, label, detail, ratio }: { state: StepState; label: string
         </div>
       )}
     </div>
+  );
+}
+
+function ModeOption({ checked, onChange, title, desc }: { checked: boolean; onChange: () => void; title: string; desc: string }) {
+  return (
+    <label className={`flex cursor-pointer gap-2.5 rounded-xl border p-3 ${checked ? "border-brand-500 bg-brand-50/40 ring-1 ring-brand-500" : "border-zinc-200 hover:bg-zinc-50"}`}>
+      <input type="radio" checked={checked} onChange={onChange} className="mt-0.5 accent-brand-600" />
+      <span>
+        <span className="block text-sm font-medium">{title}</span>
+        <span className="mt-0.5 block text-xs text-zinc-500">{desc}</span>
+      </span>
+    </label>
   );
 }

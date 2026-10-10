@@ -18,6 +18,10 @@ create table if not exists public.lectures (
   title            text not null,
   source_filename  text,
   audio_path       text,              -- storage: audio/<lecture_id>/audio.mp3
+  -- 서버(Railway) 변환 상태: none | uploading | converting | ready | error
+  audio_status     text not null default 'none'
+                   check (audio_status in ('none', 'uploading', 'converting', 'ready', 'error')),
+  audio_error      text,
 
   -- 추출 파이프라인: idle → transcribing(Whisper) → correcting(DeepSeek) → done
   extract_status   text not null default 'idle'
@@ -78,7 +82,7 @@ create table if not exists public.note_sections (
 
 -- updated_at 자동 갱신
 create or replace function public.touch_updated_at() returns trigger
-language plpgsql as $$
+language plpgsql set search_path = '' as $$
 begin
   new.updated_at = now();
   return new;
@@ -91,7 +95,7 @@ create trigger lectures_touch before update on public.lectures
 -- 대본 검색 (과목 단위, 대소문자 무시)
 create or replace function public.search_lectures(p_course_id uuid, p_query text)
 returns table (id uuid, session_no int, title text, snippet text, match_count int)
-language sql stable as $$
+language sql stable set search_path = '' as $$
   select
     l.id,
     l.session_no,
@@ -105,6 +109,8 @@ language sql stable as $$
     and strpos(lower(b.body), lower(p_query)) > 0
   order by l.session_no;
 $$;
+
+revoke execute on function public.search_lectures(uuid, text) from public, anon, authenticated;
 
 -- 모든 접근은 서버(service role)를 통해서만 이루어집니다.
 -- RLS를 켜고 정책을 만들지 않으면 anon 키로는 아무것도 읽거나 쓸 수 없습니다.

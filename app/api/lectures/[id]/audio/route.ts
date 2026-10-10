@@ -14,7 +14,7 @@ export const POST = handle(async (req: Request, ctx: Ctx) => {
   must(
     await db()
       .from("lectures")
-      .update({ audio_path: path, ...(sourceFilename ? { source_filename: sourceFilename } : {}) })
+      .update({ audio_path: path, audio_status: "ready", audio_error: null, ...(sourceFilename ? { source_filename: sourceFilename } : {}) })
       .eq("id", id),
   );
   return NextResponse.json({ ok: true });

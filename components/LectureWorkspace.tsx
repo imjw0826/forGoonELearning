@@ -21,7 +21,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
-import { processAndUploadAudio, uploadMaterial } from "@/lib/client/upload";
+import { processAndUploadAudio, uploadMaterial, type AudioMode } from "@/lib/client/upload";
 import { formatBytes, formatTime } from "@/lib/format";
 import type { PipelineState, TranscriptChunk } from "@/lib/types";
 import { useAccess } from "./AccessProvider";
@@ -50,8 +50,6 @@ interface LectureView {
 type Chunk = Omit<TranscriptChunk, "lecture_id">;
 type Job = "extract" | "summarize";
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 function isActive(job: Job, s: PipelineState) {
   return job === "extract"
     ? s.extract_status === "transcribing" || s.extract_status === "correcting"
@@ -59,75 +57,68 @@ function isActive(job: Job, s: PipelineState) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Pipeline runner: calls the step endpoint in a loop until the job ends */
+/* Pipeline: the Railway worker does the work; the page starts jobs and   */
+/* polls the saved progress (no code needed just to watch).              */
 /* ------------------------------------------------------------------ */
 
 function usePipeline(lectureId: string, initial: PipelineState) {
   const router = useRouter();
-  const { unlocked } = useAccess();
   const [state, setState] = useState(initial);
-  const [busy, setBusy] = useState<Job | null>(null);
+  const [starting, setStarting] = useState<Job | null>(null);
   const [error, setError] = useState<Partial<Record<Job, string>>>({});
-  const alive = useRef(true);
-  const runningRef = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
+  const active = isActive("extract", state) || isActive("summarize", state) || state.audio_status === "converting";
+
+  // Poll while something is running on the worker.
   useEffect(() => {
-    alive.current = true;
+    if (!active) return;
+    let cancelled = false;
+    let ticks = 0;
+    const timer = setInterval(async () => {
+      try {
+        const { state: next } = await api<{ state: PipelineState }>(`/api/lectures/${lectureId}`);
+        if (cancelled) return;
+        const prev = stateRef.current;
+        setState(next);
+        ticks++;
+        const finished =
+          (isActive("extract", prev) && !isActive("extract", next)) ||
+          (isActive("summarize", prev) && !isActive("summarize", next)) ||
+          prev.audio_status !== next.audio_status;
+        // Refresh server data (chunks / note) when a stage ends, and every ~9s while correcting/writing.
+        if (finished || (next.progress && ticks % 3 === 0)) router.refresh();
+      } catch {
+        /* transient; try again next tick */
+      }
+    }, 3000);
     return () => {
-      alive.current = false;
+      cancelled = true;
+      clearInterval(timer);
     };
-  }, []);
+  }, [active, lectureId, router]);
 
   const run = useCallback(
-    async (job: Job, start: boolean) => {
-      if (runningRef.current) return;
-      runningRef.current = true;
-      setBusy(job);
+    async (job: Job, restart: boolean) => {
+      setStarting(job);
       setError((e) => ({ ...e, [job]: undefined }));
-      const url = `/api/lectures/${lectureId}/${job}`;
       try {
-        let s: PipelineState;
-        if (start) {
-          s = (await api<{ state: PipelineState }>(url, { body: { action: "start" } })).state;
-          setState(s);
-          router.refresh();
-        }
-        while (alive.current) {
-          s = (await api<{ state: PipelineState }>(url, { body: { action: "step" } })).state;
-          if (!alive.current) break;
-          setState(s);
-          if (!isActive(job, s)) break;
-          if (s.extract_status === "transcribing") await sleep(5000);
-          else router.refresh(); // show newly corrected chunks / sections as they land
-        }
-        if (alive.current) {
-          const latest = (await api<{ state: PipelineState }>(`/api/lectures/${lectureId}`)).state;
-          setState(latest);
-          const failed = job === "extract" ? latest.extract_error : latest.summary_error;
-          if (failed && !isActive(job, latest)) setError((e) => ({ ...e, [job]: failed }));
-        }
+        const { state: next } = await api<{ state: PipelineState }>(`/api/lectures/${lectureId}/${job}`, {
+          body: { restart },
+        });
+        setState(next);
+        router.refresh();
       } catch (err) {
-        if (alive.current) setError((e) => ({ ...e, [job]: err instanceof Error ? err.message : String(err) }));
+        setError((e) => ({ ...e, [job]: err instanceof Error ? err.message : String(err) }));
       } finally {
-        runningRef.current = false;
-        if (alive.current) {
-          setBusy(null);
-          router.refresh();
-        }
+        setStarting(null);
       }
     },
     [lectureId, router],
   );
 
-  // Resume a job that was in progress when the page was (re)opened.
-  useEffect(() => {
-    if (!unlocked || runningRef.current) return;
-    if (isActive("extract", state)) void run("extract", false);
-    else if (isActive("summarize", state)) void run("summarize", false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unlocked]);
-
-  return { state, busy, error, run };
+  return { state, busy: starting, error, run };
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,7 +134,7 @@ export function LectureWorkspace(props: {
   query: string | null;
 }) {
   const { courseId, courseName, lecture, audioUrl, materials, chunks, query } = props;
-  const { guard, unlocked } = useAccess();
+  const { guard } = useAccess();
   const { state, busy, error, run } = usePipeline(lecture.id, props.initialState);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [tab, setTab] = useState<"note" | "transcript">(lecture.note && !query ? "note" : "transcript");
@@ -161,6 +152,7 @@ export function LectureWorkspace(props: {
 
   const extractRunning = busy === "extract" || isActive("extract", state);
   const summaryRunning = busy === "summarize" || isActive("summarize", state);
+  const audioBusy = state.audio_status === "uploading" || state.audio_status === "converting";
   const anyRunning = extractRunning || summaryRunning;
 
   return (
@@ -184,7 +176,7 @@ export function LectureWorkspace(props: {
               </p>
             </>
           ) : (
-            <AudioUploader lectureId={lecture.id} />
+            <AudioUploader lectureId={lecture.id} serverStatus={state.audio_status} serverError={state.audio_error} busy={audioBusy} />
           )}
         </section>
         <MaterialsPanel lectureId={lecture.id} materials={materials} disabled={anyRunning} />
@@ -203,6 +195,7 @@ export function LectureWorkspace(props: {
           progress={state.extract_status === "correcting" ? state.progress : null}
           error={error.extract ?? (!extractRunning ? state.extract_error : null)}
           disabledReason={!lecture.hasAudio ? "먼저 오디오를 업로드하세요." : summaryRunning ? "요약이 끝난 뒤 실행할 수 있어요." : null}
+          hint="서버에서 진행되니 이 페이지를 닫아도 계속돼요."
           primaryLabel={state.extract_status === "done" ? "다시 추출" : "추출"}
           onPrimary={() =>
             guard(() => {
@@ -211,7 +204,6 @@ export function LectureWorkspace(props: {
             })
           }
           onResume={isActive("extract", state) ? () => guard(() => void run("extract", false)) : undefined}
-          locked={!unlocked}
         />
         <ActionCard
           step={2}
@@ -224,6 +216,7 @@ export function LectureWorkspace(props: {
           progress={state.summary_status === "writing" ? state.progress : null}
           error={error.summarize ?? (!summaryRunning ? state.summary_error : null)}
           disabledReason={state.extract_status !== "done" ? "추출(대본 생성)을 먼저 완료하세요." : null}
+          hint="서버에서 진행되니 이 페이지를 닫아도 계속돼요."
           primaryLabel={state.summary_status === "done" ? "다시 요약" : "요약"}
           onPrimary={() =>
             guard(() => {
@@ -232,7 +225,6 @@ export function LectureWorkspace(props: {
             })
           }
           onResume={isActive("summarize", state) ? () => guard(() => void run("summarize", false)) : undefined}
-          locked={!unlocked}
         />
       </div>
 
@@ -369,25 +361,47 @@ function LectureHeader({ courseId, lecture, disabled }: { courseId: string; lect
   );
 }
 
-function AudioUploader({ lectureId }: { lectureId: string }) {
+function AudioUploader({
+  lectureId,
+  serverStatus,
+  serverError,
+  busy,
+}: {
+  lectureId: string;
+  serverStatus: PipelineState["audio_status"];
+  serverError: string | null;
+  busy: boolean;
+}) {
   const router = useRouter();
   const { guard } = useAccess();
   const [status, setStatus] = useState<string | null>(null);
   const [ratio, setRatio] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<AudioMode>("browser");
 
   const start = async (file: File) => {
     setError(null);
     try {
-      await processAndUploadAudio(lectureId, file, (s) => {
-        if (s.stage === "convert") {
-          setStatus(`음성 추출 중 ${s.progress.duration ? `${formatTime(s.progress.seconds)} / ${formatTime(s.progress.duration)}` : ""}`);
-          setRatio(s.progress.ratio);
-        } else if (s.stage === "upload") {
-          setStatus(`업로드 중 ${Math.round(s.ratio * 100)}%`);
-          setRatio(s.ratio);
-        }
-      });
+      await processAndUploadAudio(
+        lectureId,
+        file,
+        (s) => {
+          if (s.stage === "convert") {
+            setStatus(`브라우저에서 음성 추출 중 ${s.progress.duration ? `${formatTime(s.progress.seconds)} / ${formatTime(s.progress.duration)}` : ""}`);
+            setRatio(s.progress.ratio);
+          } else if (s.stage === "fallback") {
+            setStatus("브라우저 변환 실패 → 서버에서 변환합니다");
+            setRatio(null);
+          } else if (s.stage === "upload") {
+            setStatus(`${s.target === "server" ? "서버로 원본 업로드" : "업로드"} 중 ${Math.round(s.ratio * 100)}%`);
+            setRatio(s.ratio);
+          } else if (s.stage === "server-convert") {
+            setStatus("서버에서 음성 추출 중…");
+            setRatio(null);
+          }
+        },
+        mode,
+      );
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -396,11 +410,11 @@ function AudioUploader({ lectureId }: { lectureId: string }) {
     }
   };
 
-  if (status) {
+  if (status || (busy && serverStatus === "converting")) {
     return (
       <div className="space-y-2">
-        <p className="text-sm text-zinc-600">{status}</p>
-        <ProgressBar ratio={ratio} />
+        <p className="text-sm text-zinc-600">{status ?? "서버에서 음성 추출 중…"}</p>
+        <ProgressBar ratio={status ? ratio : null} />
       </div>
     );
   }
@@ -408,18 +422,25 @@ function AudioUploader({ lectureId }: { lectureId: string }) {
   return (
     <div>
       <p className="text-sm text-zinc-500">오디오가 아직 없어요. 강의 영상이나 오디오를 올려주세요.</p>
-      <label
-        className="mt-3 inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
-        onClick={(e) => {
-          // Ask for the code before opening the file picker.
-          let allowed = false;
-          guard(() => (allowed = true));
-          if (!allowed) e.preventDefault();
-        }}
-      >
-        <Upload className="h-4 w-4" /> 영상/오디오 선택
-        <input type="file" accept="video/*,audio/*,.mkv,.m4a" className="hidden" onChange={(e) => e.target.files?.[0] && start(e.target.files[0])} />
-      </label>
+      {serverStatus === "error" && serverError && <p className="mt-1 text-sm text-red-600">{serverError}</p>}
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <label
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
+          onClick={(e) => {
+            // Ask for the code before opening the file picker.
+            let allowed = false;
+            guard(() => (allowed = true));
+            if (!allowed) e.preventDefault();
+          }}
+        >
+          <Upload className="h-4 w-4" /> 영상/오디오 선택
+          <input type="file" accept="video/*,audio/*,.mkv,.m4a" className="hidden" onChange={(e) => e.target.files?.[0] && start(e.target.files[0])} />
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-xs text-zinc-500">
+          <input type="checkbox" checked={mode === "server"} onChange={(e) => setMode(e.target.checked ? "server" : "browser")} className="accent-brand-600" />
+          서버(Railway)에서 변환
+        </label>
+      </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>
   );
@@ -535,7 +556,7 @@ function ActionCard(props: {
   primaryLabel: string;
   onPrimary: () => void;
   onResume?: () => void;
-  locked: boolean;
+  hint: string;
 }) {
   const { running, progress } = props;
   return (
@@ -571,20 +592,16 @@ function ActionCard(props: {
             <ProgressBar ratio={progress && progress.total ? progress.done / progress.total : null} />
           </div>
         )}
+        {running && <p className="mt-1.5 text-xs text-zinc-400">{props.hint}</p>}
         {props.error && (
           <div className="mt-2 rounded-lg bg-red-50 p-2.5 text-xs text-red-700">
             <p className="break-words">{props.error}</p>
-            {props.onResume && !running && (
+            {props.onResume && (
               <button onClick={props.onResume} className="mt-1.5 font-medium underline">
                 이어서 다시 시도
               </button>
             )}
           </div>
-        )}
-        {!props.error && props.onResume && !running && props.locked && (
-          <button onClick={props.onResume} className="mt-2 text-xs font-medium text-brand-600 underline">
-            코드를 입력하면 이어서 진행합니다
-          </button>
         )}
       </div>
     </section>
