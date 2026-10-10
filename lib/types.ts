@@ -1,10 +1,85 @@
-export type Notes = { overview:string; concepts:{term:string;explanation:string}[]; sections:{title:string;body:string}[]; review:string[]; questions:{question:string;answer:string}[] };
-export type KeyProvider = 'deepseek'|'fal'|'assemblyai'|'converter'|'converter_url';
-export type KeySettings = {storage_ready:boolean;providers:Record<KeyProvider,boolean>};
-export type Lecture = {id:string;title:string;filename:string;bytes:number;duration:number;total:number;status:string;paused?:number;created:number;uploaded:number;completed:number;cloud?:number;provider?:string;provider_expires_at?:number|null;source_ready?:number;source_deleted_at?:number|null;provider_deleted_at?:number|null;uploaded_bytes?:number;parts?:number[];remote_status?:string|null;remote_request_id?:string|null;conversion_pending_cleanup?:boolean;notes?:string|null;chunks?:{ordinal:number;transcript:string|null;outline:string|null;corrected_transcript?:string|null;correction_audit?:string|null;start_seconds?:number|null}[]};
-export type MediaCleanup = {source:'deleted'|'pending'|'not_applicable';provider:'deleted'|'pending'|'not_applicable'|'scheduled';conversion?:'deleted'|'pending'|'not_applicable'};
-export const MAX_MEDIA = 2 * 1024 * 1024 * 1024;
-export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
-export const CHUNK_SECONDS = 600;
-export function timeLabel(seconds:number) {const m=Math.floor(seconds/60);return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;}
-export function exportNotes(lecture:Lecture, notes:Notes) {return `# ${lecture.title}\n\n## 전체 요약\n${notes.overview}\n\n## 핵심 개념\n${notes.concepts.map(c=>`### ${c.term}\n${c.explanation}`).join('\n\n')}\n\n## 강의 내용\n${notes.sections.map(c=>`### ${c.title}\n${c.body}`).join('\n\n')}\n\n## 복습 포인트\n${notes.review.map(c=>`- ${c}`).join('\n')}\n\n## 확인 질문\n${notes.questions.map(c=>`**${c.question}**\n${c.answer}`).join('\n\n')}\n\n---\n음성 전사에 기반한 AI 요약입니다. 중요한 내용은 원본 강의와 대조하세요.\n`;}
+export type ExtractStatus = "idle" | "transcribing" | "correcting" | "done";
+export type SummaryStatus = "idle" | "planning" | "writing" | "done";
+
+export interface Course {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Lecture {
+  id: string;
+  course_id: string;
+  session_no: number;
+  title: string;
+  source_filename: string | null;
+  audio_path: string | null;
+  extract_status: ExtractStatus;
+  extract_error: string | null;
+  fal_request_id: string | null;
+  fal_status_url: string | null;
+  fal_response_url: string | null;
+  language: string | null;
+  duration_sec: number | null;
+  raw_transcript: string | null;
+  transcript: string | null;
+  summary_status: SummaryStatus;
+  summary_error: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Lecture row without the heavy text columns (for lists). */
+export type LectureSummary = Pick<
+  Lecture,
+  "id" | "course_id" | "session_no" | "title" | "audio_path" | "extract_status" | "summary_status" | "created_at"
+>;
+
+export interface Material {
+  id: string;
+  lecture_id: string;
+  filename: string;
+  storage_path: string;
+  size_bytes: number | null;
+  extracted_text: string | null;
+  created_at: string;
+}
+
+export interface TranscriptChunk {
+  lecture_id: string;
+  idx: number;
+  start_sec: number | null;
+  end_sec: number | null;
+  raw_text: string;
+  corrected_text: string | null;
+}
+
+export interface NoteSection {
+  lecture_id: string;
+  idx: number;
+  title: string;
+  start_chunk: number;
+  end_chunk: number;
+  content: string | null;
+}
+
+/** Progress snapshot returned by the pipeline step endpoints. */
+export interface PipelineState {
+  extract_status: ExtractStatus;
+  extract_error: string | null;
+  summary_status: SummaryStatus;
+  summary_error: string | null;
+  /** e.g. "교정 3/12" */
+  progress: { done: number; total: number } | null;
+  /** true while the client should keep calling the step endpoint */
+  running: boolean;
+}
+
+export interface SearchHit {
+  id: string;
+  session_no: number;
+  title: string;
+  snippet: string;
+  match_count: number;
+}

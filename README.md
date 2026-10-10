@@ -1,68 +1,94 @@
-# forGoonELearning — 강의노트
+# Yoyaku
 
-한국어 강의의 영상 또는 음성 파일을 올려 원문 전사, 문맥 교정 대본, 학습 노트를 만드는 개인용 웹입니다.
+강의 영상을 올리면 **대본**과 **강의노트**를 만들어 주는 웹 강의노트 플랫폼입니다.
 
-소스 저장소: https://github.com/imjw0826/forGoonELearning
+- Next.js 16 (App Router, TypeScript) + Tailwind CSS
+- Supabase (Postgres + Storage)
+- fal.ai Whisper (음성 → 대본), DeepSeek (대본 교정 · 강의노트 작성)
+- ffmpeg.wasm (브라우저에서 영상 → mp3 변환)
 
-이 저장소의 소스는 공개이며, 실제 웹의 접근 권한과 강의 데이터는 별도로 관리합니다.
+## 동작 방식
 
-현재 사용 중인 개인 웹: https://lecture-note-studio.jwgardden.chatgpt.site
+```
+[강의 추가]  영상(1~2GB) ─ffmpeg.wasm(브라우저)→ mp3 (16kHz mono 32kbps, 1시간≈15MB) → Supabase Storage
+             강의자료(PDF/PPTX/DOCX/TXT) → Storage → 서버에서 텍스트 추출
+[추출]       mp3 → fal Whisper(큐) → ~2,000자 구간으로 분할 → DeepSeek로 구간별 오탈자·문맥 교정
+[요약]       교정 대본 + 강의자료 → DeepSeek ① 강의 순서대로 목차 설계 ② 섹션별 개요식 노트 작성 → 목차 포함 Markdown으로 조립
+```
 
-## 처리 흐름
+- 원본 영상은 서버로 전송되지 않습니다. 브라우저에서 오디오 트랙만 뽑아 mp3로 올립니다
+  (테스트: 1.4GB / 2시간 영상 → 28.8MB mp3, 약 100초).
+- 추출·요약은 서버리스 타임아웃을 피하려고 브라우저가 `step` API를 반복 호출하며 진행합니다.
+  진행 상태는 DB에 저장되므로 새로고침하거나 다시 들어와도 이어서 진행됩니다.
+- 접근 코드(기본값 `3233`)를 입력해야 과목 추가, 강의 추가, 업로드, 추출, 요약, 수정/삭제 버튼을 쓸 수 있습니다.
+  코드 없이도 목록, 대본, 강의노트는 볼 수 있고 검색도 할 수 있습니다. 코드 검증은 서버에서 하며, httpOnly 쿠키로 30일간 유지됩니다.
 
-1. 원본을 Cloudflare R2에 분할 업로드합니다. 웹의 업로드 기준은 최대 2 GiB입니다.
-2. MP4·WebM은 보유 외부 서버의 **Python·FFmpeg 코드로 MP3를 추출**합니다. MP3·M4A·WAV는 이 단계를 건너뜁니다.
-3. 준비된 음성파일만 fal API의 Wizper(Whisper Large v3)에 보내 한국어 `ko`로 전사합니다.
-4. DeepSeek가 앞뒤 원문 문맥을 참고해 별도로 교정합니다. 원문, 교정 대본, 수정 이유를 모두 보관합니다.
-5. 교정 대본으로 구간 정리와 최종 강의노트를 생성해 Cloudflare D1에 저장합니다.
-6. 최종 노트 저장 후 사이트의 원본 파일을 삭제합니다. fal 임시 파일에는 비공개 ACL과 24시간 만료를 설정합니다.
+## 설정
 
-PC는 업로드와 결과 표시를 담당하고, Python·FFmpeg 변환, 음성 인식과 AI 처리는 외부 서버에서 실행합니다. fal과 DeepSeek API 키를 API 연결에서 한 번 저장하면 다음 접속부터 서버가 자동으로 사용합니다. 키는 사용자·제공자별로 AES-GCM 암호화해서 Cloudflare D1에 보관하며, 브라우저 저장소나 GitHub에는 저장하지 않습니다.
+### 1. Supabase
 
-## API 연결 관리
+1. [supabase.com](https://supabase.com)에서 프로젝트를 만듭니다.
+2. **SQL Editor**에서 [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) 내용을 붙여넣고 실행합니다.
+   (테이블, 검색 함수, 비공개 Storage 버킷 `audio`·`materials`가 만들어집니다.)
+3. **Project Settings → API**에서 URL, anon(publishable) key, service_role key를 복사합니다.
 
-웹의 API 연결에서 fal과 DeepSeek 키를 입력하고, 영상 처리에는 변환 서버의 HTTPS 주소와 연결 키를 추가한 뒤 **저장하고 연결**을 누릅니다. 저장된 키는 조회 화면으로 반환하지 않으며 저장 여부만 표시합니다. 빈 입력은 기존 키를 유지하고, 새 키를 입력하면 교체합니다. 각 키를 개별 삭제할 수 있습니다. 기존 AssemblyAI 기록 처리를 위한 키도 별도로 저장할 수 있습니다.
+> 무료 플랜은 파일 하나당 업로드 한도가 50MB입니다. mp3는 32kbps라서 3시간 강의도 약 43MB로 한도 안에 들어갑니다.
+> 강의자료가 50MB를 넘으면 Storage 설정에서 한도를 올리거나(유료 플랜) 파일을 나눠서 올려주세요.
 
-서버 런타임에는 32바이트 무작위 값의 64자리 16진수 `KEY_VAULT_SECRET`이 필요합니다. 이 값은 Sites 비밀 환경 변수로 관리하고 배포마다 유지해야 합니다. 일반 배포에서 교체하지 않습니다. 분실하거나 교체하면 기존 저장 키를 복호화할 수 없어 사용자가 키를 다시 등록해야 합니다. 실제 값은 소스·호스팅 매니페스트·GitHub에 넣지 않습니다.
+### 2. 환경변수
 
-## 강의 삭제와 연결 오류 확인
+`.env.example`을 `.env.local`로 복사한 뒤 채워 넣으세요.
 
-내 강의 목록의 휴지통 버튼으로 파일·원문·교정 대본·노트를 함께 삭제할 수 있습니다. 확인 후 삭제하며 API 키는 유지합니다. 미완료 업로드를 취소하고, 현재 서버 요청이 처리 중이면 잠시 후 재시도하도록 안내합니다. 저장소 정리가 실패하면 삭제 중 기록을 남겨 다시 삭제할 수 있습니다. 진행 중인 fal 전사는 취소를 요청하지만 실행 중인 처리의 중단은 보장되지 않습니다. fal 임시 파일은 기존 만료 시점에 삭제됩니다.
+| 변수 | 설명 |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon / publishable key (브라우저에서 서명 URL로 업로드할 때 사용) |
+| `SUPABASE_SERVICE_ROLE_KEY` | service role key (**서버 전용**) |
+| `FAL_KEY` | fal.ai API 키 |
+| `WHISPER_LANGUAGE` | 비우면 자동 감지. 한국어 강의만 올린다면 `ko`를 권장 |
+| `DEEPSEEK_API_KEY` | DeepSeek API 키 |
+| `DEEPSEEK_MODEL` | 기본값 `deepseek-chat` |
+| `ACCESS_CODE` | 버튼 잠금 해제 코드. 기본값 `3233` |
+| `SESSION_SECRET` | 쿠키 서명용 임의의 긴 문자열 |
 
-Whisper 연결은 Cloudflare Workers에서 지원되는 `redirect: manual`을 사용하고 예상하지 못한 주소 이동을 차단합니다. 기존 `redirect: error`는 이 런타임에서 요청 전 예외를 발생시켰습니다. 오류에는 실패 단계와 HTTP 상태를 표시하며, 전사 요청 번호가 있으면 fal에서 확인할 수 있도록 표시합니다. 키·서명 URL·외부 응답 본문은 오류 기록에 남기지 않습니다.
+### 3. 실행
 
-## Python 변환 서버와 중단 버튼
+```bash
+npm install      # postinstall에서 ffmpeg.wasm 파일을 public/ffmpeg 로 복사합니다
+npm run dev      # http://localhost:3000
+```
 
-변환은 별도의 유료 변환 API 없이 Python 표준 라이브러리와 FFmpeg 코드로 실행합니다. [서버 설치 안내](services/audio-converter/README.md), [Python 코드](services/audio-converter/server.py), Docker/Compose 파일이 포함되어 있습니다. 현재 Sites의 Cloudflare Worker는 FFmpeg를 실행할 수 없으므로 보유 서버에 이 서비스를 배포하고 HTTPS 주소와 `CONVERTER_TOKEN`을 등록해야 합니다. **서버가 연결되기 전에는 영상 전사를 시작하지 않습니다.** 서버 실행 비용 및 fal/DeepSeek 이용료는 별도입니다.
+### 4. 배포 (Vercel 권장)
 
-작업 ID를 저장한 뒤 멱등 요청으로 변환을 접수하고 완료된 MP3만 Whisper에 전달합니다. 실패 시 영상을 그대로 Whisper에 보내는 대체 경로는 없습니다. MP3는 서명된 임시 URL로 제공하고, 노트 저장·강의 삭제 후 서버 파일 삭제를 요청합니다. 자동 만료는 24시간입니다. 원본은 노트 저장까지 보관합니다.
+1. 저장소를 Vercel에 연결하고 위 환경변수를 등록합니다.
+2. 추출/요약 API는 `maxDuration = 300`초를 사용합니다. 기본 Fluid Compute 설정이면 Hobby 플랜에서도 동작합니다.
+3. `public/ffmpeg`는 빌드 중 `npm install`의 postinstall 단계에서 자동으로 생성됩니다.
 
-진행 표시의 작은 **중단** 버튼은 업로드·폴링·후속 AI 처리를 중단하고 서버에 중단 상태를 저장합니다. 진행 중인 Python 변환에는 취소·삭제를 요청하며 저장된 원본에서 다시 시작할 수 있습니다. 이미 실행 중인 fal/DeepSeek 요청은 완료되거나 과금될 수 있습니다. 저장된 결과는 재개 시 재사용합니다. 왼쪽 강의 목록은 너비를 늘리고 항목 높이를 줄였으며 부가 문구를 삭제했습니다.
+## 사용법
 
-## GitHub 저장소와 웹 호스팅
+1. 왼쪽 사이드바 하단의 **읽기 전용 · 코드 입력**을 누르고 코드를 입력합니다.
+2. **듣는 과목 +** 버튼으로 과목을 추가합니다.
+3. 과목을 고르고 오른쪽 위의 **강의 추가**를 누른 다음, 영상 또는 오디오와 강의자료(선택)를 올립니다.
+4. 강의 페이지에서 **추출** 버튼을 누르면 Whisper 대본이 만들어지고 DeepSeek가 교정합니다.
+5. **요약** 버튼을 누르면 대본과 강의자료를 바탕으로 목차가 있는 강의노트를 만듭니다. Markdown으로 복사하거나 다운로드할 수 있습니다.
+6. 과목 화면 위쪽 검색창에서는 그 과목의 모든 강의 대본을 검색할 수 있습니다. 검색 결과를 누르면 해당 대본 위치로 이동하고, 검색어가 강조 표시됩니다.
 
-이 저장소는 현재 운영 중인 Sites 웹의 소스 보관본입니다. GitHub에 올리는 것만으로 새로운 웹 서버가 실행되거나 현재 웹이 자동 갱신되지는 않습니다. GitHub Pages는 정적 웹 호스팅이므로 이 프로젝트의 업로드 API, D1/R2 저장소, 서버 측 API 연결을 단독으로 실행할 수 없습니다.
+## 프로젝트 구조
 
-현재 배포는 Cloudflare Workers 기반의 ChatGPT Sites에서 실행되며 개인 접근 권한을 유지합니다. 소스의 `.openai/hosting.json`은 현재 Sites 프로젝트와 DB/BUCKET 바인딩을 나타냅니다. GitHub 저장소의 공개 여부와 실제 웹사이트의 접근 권한은 별개입니다.
-
-다른 호스팅으로 이전하려면 서버 런타임, D1/R2 또는 대체 저장소, 대용량 업로드, 로그인과 소유자 검증을 별도로 연결해야 합니다. 현재 `oai-authenticated-user-id` 헤더는 Sites 게이트웨이가 검증해서 전달합니다. 독립 배포에서 이 헤더를 외부 클라이언트가 직접 설정하도록 허용해서는 안 됩니다.
-
-## 개발
-
-- Node.js 22.13 이상
-- pnpm: `package.json`의 packageManager 버전
-- 설치: `pnpm install --frozen-lockfile`
-- 타입 확인: `pnpm exec tsc --noEmit`
-- 통합 검증: `pnpm test:integration` (실제 로컬 Workers/D1/R2 + 외부 API 모의 응답)
-- DB 스키마: `db/schema.ts`, 순차 마이그레이션: `drizzle/`
-- 앱: `app/`, 서버 API: `app/api/lectures/`, 외부 API 어댑터: `lib/`
-
-기존 AssemblyAI로 생성한 강의의 기록을 유지하기 위한 호환 코드가 포함되어 있습니다. 새 업로드는 fal의 Whisper API를 사용합니다.
-
-## 검증 범위
-
-이 소스 버전은 타입 검사, 빌드, 실제 로컬 D1/R2와 외부 API 응답 모의 테스트를 통과했습니다. 작은 합성 MP4로 실제 FFmpeg 변환을 실행해 영상 트랙이 없는 MP3 생성, 서명 다운로드, 변환 취소·삭제도 확인했습니다. 변환 실패 시 전사 차단, 음성 업로드의 변환 생략, 중단·재개도 검증했습니다. 분할 업로드, 한국어 고정, 교정 전후 보관, 실패 후 재시도, 노트 저장 후 원본 삭제를 확인했습니다. API 키 저장·교체·삭제, 계정별 분리, 암호화 변조 차단, 클라이언트에서 키를 보내지 않는 자동 사용도 검증했습니다. Workers의 실제 Request 구현으로 요청 옵션을 검증하며, 강의 삭제·미완료 업로드 취소·소유자 분리·취소 요청·삭제 실패 후 재시도도 확인했습니다. 실제 API 키를 사용한 한국어 인식 품질과 실제 1.5 GiB 강의의 전체 처리는 아직 실측하지 않았습니다. AI 교정도 틀릴 수 있으므로 중요한 내용은 보관된 원문과 대조하세요.
-
-## 데이터 관리
-
-저장소에 강의 영상, 대본, 생성 노트, 사용자 데이터베이스, API 키, 런타임 상태, 설치된 의존성, 빌드 산출물을 올리지 않습니다. 강의 파일과 생성된 결과는 현재 개인 웹의 사용자별 저장소에 보관합니다.
+```
+app/
+  layout.tsx                         사이드바 + 메인 스플릿 레이아웃
+  courses/[courseId]/page.tsx        과목: 강의 목록 + 검색 + 강의 추가
+  courses/[courseId]/lectures/new    강의 추가 (변환·업로드 진행 표시)
+  courses/[courseId]/lectures/[id]   강의: 오디오, 자료, 추출/요약, 대본/노트 탭
+  api/…                              Route Handlers (모든 쓰기 작업은 접근 코드 확인)
+components/                          UI
+lib/
+  pipeline.ts                        추출/요약 상태 머신 (step 단위 진행)
+  prompts.ts                         DeepSeek 프롬프트 (교정 · 목차 · 섹션 노트)
+  fal.ts / deepseek.ts               외부 API 클라이언트
+  chunk.ts                           Whisper 세그먼트 → 교정 단위 구간
+  extract-text.ts                    PDF / PPTX / DOCX / TXT 텍스트 추출
+  client/audio.ts                    ffmpeg.wasm 오디오 추출 (WORKERFS로 대용량 파일 처리)
+supabase/migrations/0001_init.sql    DB 스키마
+```
