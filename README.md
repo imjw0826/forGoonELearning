@@ -2,67 +2,63 @@
 
 강의 영상을 올리면 **대본**과 **강의노트**를 만들어 주는 웹 강의노트 플랫폼입니다.
 
-- Next.js 16 (App Router, TypeScript) + Tailwind CSS
-- Supabase (Postgres + Storage)
-- fal.ai Whisper (음성 → 대본), DeepSeek (대본 교정 · 강의노트 작성)
-- ffmpeg.wasm (브라우저에서 영상 → mp3 변환)
+| 구성 | 역할 | 배포 위치 |
+|---|---|---|
+| Next.js 16 (TypeScript) | 화면, 접근 코드, 업로드 URL 발급, 진행 상태 조회 | **Vercel** `yoyaku` |
+| Python 워커 (`worker/`, FastAPI + ffmpeg) | 영상→mp3 변환, fal Whisper, DeepSeek 교정·강의노트 생성 | **Railway** `yoyaku / worker` |
+| Supabase | Postgres(과목·강의·대본·노트) + Storage(오디오·강의자료) | **Supabase** `yoyaku` (서울) |
 
 ## 동작 방식
 
 ```
-[강의 추가]  영상(1~2GB) ─ffmpeg.wasm(브라우저)→ mp3 (16kHz mono 32kbps, 1시간≈15MB) → Supabase Storage
-             강의자료(PDF/PPTX/DOCX/TXT) → Storage → 서버에서 텍스트 추출
-[추출]       mp3 → fal Whisper(큐) → ~2,000자 구간으로 분할 → DeepSeek로 구간별 오탈자·문맥 교정
-[요약]       교정 대본 + 강의자료 → DeepSeek ① 강의 순서대로 목차 설계 ② 섹션별 개요식 노트 작성 → 목차 포함 Markdown으로 조립
+[강의 추가] 영상 ─┬─ 브라우저 ffmpeg.wasm → mp3 ─────────────┐
+                  └─ (선택/실패 시) 원본을 Railway로 분할 업로드 → ffmpeg → mp3 ┤→ Supabase Storage
+            강의자료(PDF/PPTX/DOCX/TXT) → Storage → Vercel에서 텍스트 추출
+[추출] Vercel → Railway /jobs/extract → fal Whisper → ~2,000자 구간 → DeepSeek 교정 (4개 병렬)
+[요약] Vercel → Railway /jobs/summarize → DeepSeek 목차 설계 → 섹션별 개요식 노트 → 목차 포함 Markdown
 ```
 
-- 원본 영상은 서버로 전송되지 않습니다. 브라우저에서 오디오 트랙만 뽑아 mp3로 올립니다
-  (테스트: 1.4GB / 2시간 영상 → 28.8MB mp3, 약 100초).
-- 추출·요약은 서버리스 타임아웃을 피하려고 브라우저가 `step` API를 반복 호출하며 진행합니다.
-  진행 상태는 DB에 저장되므로 새로고침하거나 다시 들어와도 이어서 진행됩니다.
-- 접근 코드(기본값 `3233`)를 입력해야 과목 추가, 강의 추가, 업로드, 추출, 요약, 수정/삭제 버튼을 쓸 수 있습니다.
-  코드 없이도 목록, 대본, 강의노트는 볼 수 있고 검색도 할 수 있습니다. 코드 검증은 서버에서 하며, httpOnly 쿠키로 30일간 유지됩니다.
+- 추출과 요약은 Railway 워커에서 백그라운드로 돌기 때문에 **페이지를 닫아도 계속됩니다**.
+  진행 상태는 DB에 저장되므로 워커가 재배포·재시작돼도 이어서 진행합니다.
+- 브라우저 변환을 쓰면 원본 영상은 업로드되지 않습니다(1.4GB/2시간 영상 → 28.8MB mp3, 약 100초).
+  브라우저 변환이 실패하면 자동으로 서버 변환으로 넘어갑니다.
+- 접근 코드(기본 `3233`)를 입력해야 과목·강의 추가, 업로드, 추출, 요약, 수정·삭제를 할 수 있습니다.
+  목록·대본·노트 보기와 검색은 코드 없이 됩니다.
 
-## 설정
+## 남은 설정: API 키 3개 넣기
 
-### 1. Supabase
+인프라는 모두 만들어 두었습니다. 아래 키만 넣으면 동작합니다.
 
-1. [supabase.com](https://supabase.com)에서 프로젝트를 만듭니다.
-2. **SQL Editor**에서 [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) 내용을 붙여넣고 실행합니다.
-   (테이블, 검색 함수, 비공개 Storage 버킷 `audio`·`materials`가 만들어집니다.)
-3. **Project Settings → API**에서 URL, anon(publishable) key, service_role key를 복사합니다.
+| 키 | 어디서 받나 | 넣을 곳 |
+|---|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → `yoyaku` 프로젝트 → Project Settings → API Keys → **secret / service_role** | **Vercel** `yoyaku` 와 **Railway** `worker` 둘 다 |
+| `FAL_KEY` | fal.ai → Dashboard → Keys | **Railway** `worker` |
+| `DEEPSEEK_API_KEY` | platform.deepseek.com → API keys | **Railway** `worker` |
 
-> 무료 플랜은 파일 하나당 업로드 한도가 50MB입니다. mp3는 32kbps라서 3시간 강의도 약 43MB로 한도 안에 들어갑니다.
-> 강의자료가 50MB를 넘으면 Storage 설정에서 한도를 올리거나(유료 플랜) 파일을 나눠서 올려주세요.
+- Vercel: 프로젝트 `yoyaku` → Settings → Environment Variables → 추가 후 **Redeploy**
+- Railway: 프로젝트 `yoyaku` → `worker` 서비스 → Variables → 추가하면 자동 재배포
+- 선택: Railway에 `WHISPER_LANGUAGE=ko`를 넣으면 한국어로 고정됩니다(비우면 자동 감지).
+- 확인: `https://<워커 도메인>/health`의 `missing`이 빈 배열이면 워커 설정이 끝난 것입니다.
 
-### 2. 환경변수
+이미 설정된 값: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `WORKER_URL`, `WORKER_SECRET`(Vercel·Railway 공통 비밀값),
+`SESSION_SECRET`, `ACCESS_CODE=3233`, `SUPABASE_URL`, `DATA_DIR=/data`(Railway 볼륨), `DEEPSEEK_MODEL=deepseek-chat`.
 
-`.env.example`을 `.env.local`로 복사한 뒤 채워 넣으세요.
+> Supabase 무료 플랜은 파일당 50MB 제한이 있습니다. mp3는 32kbps라 3시간 강의도 약 43MB입니다.
 
-| 변수 | 설명 |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon / publishable key (브라우저에서 서명 URL로 업로드할 때 사용) |
-| `SUPABASE_SERVICE_ROLE_KEY` | service role key (**서버 전용**) |
-| `FAL_KEY` | fal.ai API 키 |
-| `WHISPER_LANGUAGE` | 비우면 자동 감지. 한국어 강의만 올린다면 `ko`를 권장 |
-| `DEEPSEEK_API_KEY` | DeepSeek API 키 |
-| `DEEPSEEK_MODEL` | 기본값 `deepseek-chat` |
-| `ACCESS_CODE` | 버튼 잠금 해제 코드. 기본값 `3233` |
-| `SESSION_SECRET` | 쿠키 서명용 임의의 긴 문자열 |
-
-### 3. 실행
+## 로컬 개발
 
 ```bash
-npm install      # postinstall에서 ffmpeg.wasm 파일을 public/ffmpeg 로 복사합니다
-npm run dev      # http://localhost:3000
+cp .env.example .env.local   # 값 채우기
+npm install                  # postinstall이 ffmpeg.wasm 파일을 public/ffmpeg 로 복사
+npm run dev
+
+cd worker
+pip install -r requirements.txt
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... FAL_KEY=... DEEPSEEK_API_KEY=... WORKER_SECRET=... DATA_DIR=./data \
+  uvicorn app.main:app --port 8080       # .env.local의 WORKER_URL=http://localhost:8080
 ```
 
-### 4. 배포 (Vercel 권장)
-
-1. 저장소를 Vercel에 연결하고 위 환경변수를 등록합니다.
-2. 추출/요약 API는 `maxDuration = 300`초를 사용합니다. 기본 Fluid Compute 설정이면 Hobby 플랜에서도 동작합니다.
-3. `public/ffmpeg`는 빌드 중 `npm install`의 postinstall 단계에서 자동으로 생성됩니다.
+DB 스키마는 `supabase/migrations/0001_init.sql`에 있습니다.
 
 ## 사용법
 
@@ -84,11 +80,15 @@ app/
   api/…                              Route Handlers (모든 쓰기 작업은 접근 코드 확인)
 components/                          UI
 lib/
-  pipeline.ts                        추출/요약 상태 머신 (step 단위 진행)
-  prompts.ts                         DeepSeek 프롬프트 (교정 · 목차 · 섹션 노트)
-  fal.ts / deepseek.ts               외부 API 클라이언트
-  chunk.ts                           Whisper 세그먼트 → 교정 단위 구간
+  worker.ts                          Railway 워커 호출 · 업로드 토큰 발급
+  pipeline.ts                        진행 상태 조회
   extract-text.ts                    PDF / PPTX / DOCX / TXT 텍스트 추출
   client/audio.ts                    ffmpeg.wasm 오디오 추출 (WORKERFS로 대용량 파일 처리)
+  client/upload.ts                   브라우저 변환 / 서버 분할 업로드
+worker/                              Railway Python 워커 (Dockerfile)
+  app/main.py                        /jobs, /uploads, /health
+  app/pipeline.py                    추출·요약 상태 머신
+  app/prompts.py                     DeepSeek 프롬프트 (교정 · 목차 · 섹션 노트)
+  app/media.py                       분할 업로드 조립 + ffmpeg
 supabase/migrations/0001_init.sql    DB 스키마
 ```
