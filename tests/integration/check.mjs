@@ -19,7 +19,7 @@ try{
    }
  }
  const old=await db.prepare("SELECT status,notes FROM lectures WHERE id='old'").first();assert.equal(old.status,'complete');assert.equal(old.notes,'{}');
- const key='sk-unit-test-value-123456789',speech='fal-unit-test-key123456789',stt={'x-fal-key':speech},ai={'x-deepseek-key':key};
+ const key='sk-unit-test-value-123456789',speech='fal-unit-test-key123456789',converter='converter-unit-test-key-1234567890123456',conversionHeaders={'x-converter-url':'https://converter.test','x-converter-key':converter},stt={'x-fal-key':speech,...conversionHeaders},ai={'x-deepseek-key':key};
  async function call(path='',method='GET',data,who='user-a',other={}){
    const headers={'oai-authenticated-user-id':who,...other};let body=data;
    if(data&&!(data instanceof Uint8Array)){headers['Content-Type']='application/json';body=JSON.stringify(data);}
@@ -43,19 +43,19 @@ try{
  r=await call('/'+l.id+'/source');assert.equal(r.status,200);let bytes=new Uint8Array(await r.arrayBuffer());assert.equal(bytes.length,16*1024*1024+64);assert.equal(bytes[0],7);assert.equal(bytes.at(-1),8);
  r=await call('/'+l.id+'/source','GET',undefined,'user-b');assert.equal(r.status,404);
  r=await call('/'+l.id+'/speech-start','POST');assert.equal(r.status,400);
- r=await call('/'+l.id+'/speech-start','POST',undefined,'user-a',{'x-fal-key':'invalid-fal-test-key123456'});assert.equal(r.status,401);
+ r=await call('/'+l.id+'/speech-start','POST',undefined,'user-a',{'x-fal-key':'invalid-fal-test-key123456',...conversionHeaders});assert.equal(r.status,401);
  let job=await db.prepare('SELECT lock_until FROM media_jobs WHERE lecture_id=?').bind(l.id).first();assert.equal(job.lock_until,0);
- for(const [keyValue,code] of [['redirect-fal-test-key123456',502],['timeout-fal-test-key123456',504],['network-fal-test-key123456',502]]){r=await call('/'+l.id+'/speech-start','POST',undefined,'user-a',{'x-fal-key':keyValue});assert.equal(r.status,code);const err=await r.json();assert(err.error.includes('fal 업로드 준비'));assert(!err.error.includes(keyValue));assert(!err.error.includes('evil.test'));}
+ for(const [keyValue,code] of [['redirect-fal-test-key123456',502],['timeout-fal-test-key123456',504],['network-fal-test-key123456',502]]){r=await call('/'+l.id+'/speech-start','POST',undefined,'user-a',{'x-fal-key':keyValue,...conversionHeaders});assert.equal(r.status,code);const err=await r.json();assert(err.error.includes('fal 업로드 준비'));assert(!err.error.includes(keyValue));assert(!err.error.includes('evil.test'));}
 
  // Persist keys once, then run the entire job without client key headers.
  r=await call('/settings','GET',undefined,'');assert.equal(r.status,401);
- r=await call('/settings');assert.deepEqual((await r.json()).providers,{deepseek:false,fal:false,assemblyai:false});
+ r=await call('/settings');assert.deepEqual((await r.json()).providers,{deepseek:false,fal:false,assemblyai:false,converter:false,converter_url:false});
  r=await call('/settings','POST',{deepseek:key,fal:speech},'user-a',{origin:'https://evil.test'});assert.equal(r.status,403);
  r=await call('/settings','POST',{deepseek:'short'});assert.equal(r.status,400);
  r=await call('/settings','POST',{deepseek:key+'\ninvalid'});assert.equal(r.status,400);
- r=await call('/settings','POST',{deepseek:key,fal:speech});assert.equal(r.status,200);const keyStatus=await r.json();assert(keyStatus.storage_ready&&keyStatus.providers.deepseek&&keyStatus.providers.fal);assert(!JSON.stringify(keyStatus).includes(key));assert(!JSON.stringify(keyStatus).includes(speech));
- let vaultRows=(await db.prepare('SELECT * FROM provider_credentials WHERE owner=?').bind('user-a').all()).results;assert.equal(vaultRows.length,2);assert(vaultRows.every(row=>row.ciphertext!==key&&row.ciphertext!==speech));assert.notEqual(vaultRows[0].iv,vaultRows[1].iv);
- r=await call('/settings','GET',undefined,'user-b');assert.deepEqual((await r.json()).providers,{deepseek:false,fal:false,assemblyai:false});
+ r=await call('/settings','POST',{deepseek:key,fal:speech,converter,converter_url:'https://converter.test'});assert.equal(r.status,200);const keyStatus=await r.json();assert(keyStatus.storage_ready&&keyStatus.providers.deepseek&&keyStatus.providers.fal);assert(!JSON.stringify(keyStatus).includes(key));assert(!JSON.stringify(keyStatus).includes(speech));
+ let vaultRows=(await db.prepare('SELECT * FROM provider_credentials WHERE owner=?').bind('user-a').all()).results;assert.equal(vaultRows.length,4);assert(vaultRows.every(row=>row.ciphertext!==key&&row.ciphertext!==speech));assert.notEqual(vaultRows[0].iv,vaultRows[1].iv);
+ r=await call('/settings','GET',undefined,'user-b');assert.deepEqual((await r.json()).providers,{deepseek:false,fal:false,assemblyai:false,converter:false,converter_url:false});
  // Replacing the same key generates a fresh IV and authenticated ciphertext.
  const previousDeepseek=vaultRows.find(row=>row.provider==='deepseek');
  r=await call('/settings','POST',{deepseek:key});assert.equal(r.status,200);
@@ -67,6 +67,8 @@ try{
  await db.prepare('UPDATE provider_credentials SET ciphertext=?,iv=? WHERE owner=? AND provider=?').bind(savedFal.ciphertext,savedFal.iv,'user-a','fal').run();
  r=await call('/'+l.id+'/speech-start','POST');assert.equal(r.status,200);
  r=await call('/'+l.id+'/speech-start','POST');assert.equal(r.status,200);
+ r=await call('/'+l.id+'/speech-poll','POST');assert.equal(r.status,200);assert.equal((await r.json()).status,'converting');
+ r=await call('/'+l.id+'/speech-start','POST');assert.equal(r.status,200);assert.equal((await r.json()).status,'converting');
  r=await call('/'+l.id+'/speech-poll','POST');assert.equal(r.status,200);assert.equal((await r.json()).status,'queued');
  r=await call('/'+l.id+'/speech-poll','POST');assert.equal(r.status,200);assert.equal((await r.json()).status,'processing');
  r=await call('/'+l.id+'/speech-poll','POST');assert.equal(r.status,200);assert.equal((await r.json()).status,'completed');
@@ -87,8 +89,8 @@ try{
  r=await call('/'+l.id+'/source');assert.equal(r.status,404);
  const bucket=await mf.getR2Bucket('BUCKET');const jobKey=await db.prepare('SELECT source_key FROM media_jobs WHERE lecture_id=?').bind(l.id).first();assert.equal(await bucket.head(jobKey.source_key),null);
  r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-b',stt);assert.equal(r.status,404);
- r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-a',{'x-fal-key':'invalid-fal-test-key123456'});assert.equal(r.status,200);assert.equal((await r.json()).cleanup.provider,'scheduled');
- r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-a',stt);assert.equal(r.status,200);assert.deepEqual((await r.json()).cleanup,{source:'deleted',provider:'scheduled'});
+ r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-a',{'x-fal-key':'invalid-fal-test-key123456',...conversionHeaders});assert.equal(r.status,200);assert.equal((await r.json()).cleanup.provider,'scheduled');
+ r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-a',stt);assert.equal(r.status,200);assert.deepEqual((await r.json()).cleanup,{source:'deleted',provider:'scheduled',conversion:'deleted'});
  r=await call('/'+l.id+'/cleanup-source','POST',undefined,'user-a',stt);assert.equal(r.status,200);
  r=await call('/'+l.id+'/summarize','POST');assert.equal(r.status,200);
  r=await call('/'+l.id+'/detail');detail=await r.json();assert.equal(detail.status,'complete');assert.equal(detail.completed,2);
@@ -113,11 +115,47 @@ try{
  r=await call('/settings','DELETE',{providers:['deepseek']});assert.equal(r.status,200);const afterDelete=await r.json();assert(!afterDelete.providers.deepseek&&afterDelete.providers.fal);
  r=await call('/retry-delete/correct','POST',{ordinal:0});assert.equal(r.status,409);
  r=await call('/'+large.id+'/correct','POST',{ordinal:0});assert.equal(r.status,400);
- r=await call('/settings','DELETE',{providers:['fal']});assert.equal(r.status,200);assert(!(await r.json()).providers.fal);
+ r=await call('/settings','DELETE',{providers:['fal','converter','converter_url']});assert.equal(r.status,200);assert(!(await r.json()).providers.fal);
  assert.equal((await db.prepare('SELECT COUNT(*) count FROM provider_credentials').first()).count,0);
  const stats=await (await mf.dispatchFetch('https://test.local/test-stats')).json();assert.deepEqual(stats,{submissions:1,polls:2,uploads:2,deletions:2,corrections:4});
+ assert.deepEqual(await (await mf.dispatchFetch('https://test.local/test-conversions')).json(),{conversionSubmissions:1,conversionPolls:2,conversionDeletes:1});
  const persisted=JSON.stringify(await db.prepare('SELECT * FROM media_jobs').all());assert(!persisted.includes(speech));assert(!persisted.includes(key));
  r=await call();const saved=await r.json();assert.equal(saved.length,4);const savedComplete=saved.find(x=>x.id===l.id);assert.equal(savedComplete.status,'complete');assert.equal(savedComplete.source_ready,1);assert(savedComplete.source_deleted_at&&savedComplete.provider_expires_at);assert.equal(savedComplete.provider,'fal');
+ // Audio skips Python conversion. Invalid/error converter responses never fall back to video STT.
+ const beforeExtra=await (await mf.dispatchFetch('https://test.local/test-stats')).json();
+ for(const [name,remote,expected] of [['conversion-failed','ffff0000-0000-4000-8000-000000000001',422],['conversion-bad-output','eeee0000-0000-4000-8000-000000000001',502]]){
+   await db.prepare("INSERT INTO lectures (id,owner,title,filename,bytes,duration,total,status,created) VALUES (?,'user-a','변환 실패','sample.mp4',64,0,0,'ready',4)").bind(name).run();
+   await db.prepare("INSERT INTO media_jobs (lecture_id,source_key,upload_id,media_type,provider,ready,conversion_id) VALUES (?,?,'test','video/mp4','fal',1,?)").bind(name,'source/'+name+'.mp4',remote).run();
+   await bucket.put('source/'+name+'.mp4','original');
+   r=await call('/'+name+'/speech-start','POST',undefined,'user-a',stt);assert.equal(r.status,expected);
+   assert.equal((await db.prepare('SELECT remote_id,lock_until FROM media_jobs WHERE lecture_id=?').bind(name).first()).remote_id,null);
+   assert(await bucket.head('source/'+name+'.mp4'));
+   r=await call('/'+name+'/delete','DELETE',undefined,'user-a',stt);assert.equal(r.status,200);
+ }
+ assert.equal((await (await mf.dispatchFetch('https://test.local/test-stats')).json()).submissions,beforeExtra.submissions);
+ await db.prepare("INSERT INTO lectures (id,owner,title,filename,bytes,duration,total,status,created) VALUES ('audio-direct','user-a','소리','audio.mp3',64,0,0,'ready',4)").run();
+ await db.prepare("INSERT INTO media_jobs (lecture_id,source_key,upload_id,media_type,provider,ready,transfer_ready,transfer_url,upload_url,provider_expires_at) VALUES ('audio-direct','source/audio.mp3','test','audio/mpeg','fal',1,1,'https://v3b.fal.media/upload/abc?token=upload-only','https://v3b.fal.media/files/b/store/audio.mp3',?)").bind(Date.now()+86400000).run();
+ const beforeAudio=await (await mf.dispatchFetch('https://test.local/test-conversions')).json();
+ r=await call('/audio-direct/speech-start','POST',undefined,'user-a',{'x-fal-key':speech});assert.equal(r.status,200);assert.equal((await r.json()).status,'queued');
+ assert.deepEqual(await (await mf.dispatchFetch('https://test.local/test-conversions')).json(),beforeAudio);
+ r=await call('/audio-direct/delete','DELETE',undefined,'user-a',stt);assert.equal(r.status,200);
+ // Pausing conversion cancels the external task; resume clears the cancelled ID before restart.
+ await db.prepare("INSERT INTO lectures (id,owner,title,filename,bytes,duration,total,status,created) VALUES ('pause-conversion','user-a','변환 중단','pause.mp4',64,0,0,'ready',4)").run();
+ await db.prepare("INSERT INTO media_jobs (lecture_id,source_key,upload_id,media_type,provider,ready,conversion_id,remote_status) VALUES ('pause-conversion','source/pause.mp4','test','video/mp4','fal',1,'11110000-0000-4000-8000-000000000001','converting')").run();
+ r=await call('/pause-conversion/pause','POST',undefined,'user-a',stt);assert.equal(r.status,200);assert((await r.json()).conversion_cancelled);
+ r=await call('/pause-conversion/speech-start','POST',undefined,'user-a',stt);assert.equal(r.status,409);
+ r=await call('/pause-conversion/resume','POST');assert.equal(r.status,200);
+ assert.equal((await db.prepare("SELECT conversion_id FROM media_jobs WHERE lecture_id='pause-conversion'").first()).conversion_id,null);
+ r=await call('/pause-conversion/delete','DELETE',undefined,'user-a',stt);assert.equal(r.status,200);
+ // Persistent pause: owner/origin protected and blocks processing until explicit resume.
+ r=await call('/'+large.id+'/pause','POST',undefined,'user-b');assert.equal(r.status,404);
+ r=await call('/'+large.id+'/pause','POST',undefined,'user-a',{origin:'https://evil.test'});assert.equal(r.status,403);
+ r=await call('/'+large.id+'/pause','POST');assert.equal(r.status,200);
+ r=await call('/'+large.id+'/detail');assert.equal((await r.json()).paused,1);
+ r=await call('/'+large.id+'/upload-part?part=1','POST',new Uint8Array(64),'user-a',{'Content-Type':'application/octet-stream'});assert.equal(r.status,409);
+ r=await call('/'+large.id+'/speech-start','POST',undefined,'user-a',stt);assert.equal(r.status,409);
+ r=await call('/'+large.id+'/resume','POST');assert.equal(r.status,200);
+ r=await call('/'+large.id+'/detail');assert.equal((await r.json()).paused,0);
  // User-requested deletion: ownership, request origin, every related row/file, legacy media, interrupted upload.
  r=await call('/'+l.id+'/delete','DELETE',undefined,'');assert.equal(r.status,401);
  r=await call('/'+l.id+'/delete','DELETE',undefined,'user-b');assert.equal(r.status,404);
@@ -161,10 +199,10 @@ try{
  await db.prepare("INSERT INTO media_jobs (lecture_id,source_key,upload_id,media_type,provider,ready,remote_id,remote_status,provider_expires_at) VALUES ('delete-active','active-original','test-id','audio/mpeg','fal',1,'delete-active-job','queued',?)").bind(Date.now()+86400000).run();
  await bucket.put('active-original','original');
  r=await call('/delete-active/delete','DELETE');assert.equal(r.status,200);assert.equal((await r.json()).provider_cleanup,'scheduled');
- assert.equal((await (await mf.dispatchFetch('https://test.local/test-cancels')).json()).cancellations,1);
+ assert.equal((await (await mf.dispatchFetch('https://test.local/test-cancels')).json()).cancellations,2);
  assert.equal(await bucket.head('active-original'),null);
  r=await call('/settings');assert((await r.json()).providers.fal);
  await call('/settings','DELETE',{providers:['fal']});
  console.log('PASS: Workers redirect mode validation, redirect blocking, connection vs timeout errors, owner-only lecture deletion, related rows and R2 media deletion, incomplete multipart abort, active-lock conflict, deleting-record retry.');
- console.log('PASS: encrypted credential persistence; no plaintext readback; no client key headers required after save; owner isolation; AES-GCM IV freshness and tamper rejection; partial replacement and deletion;  Whisper ko/v3; two bounded ranged streams to fal; private upload ACL; signed read URL; 24h expiration; separate correction and audit; raw text preserved; negation/number/formula preserved; malformed correction rejected; corrected input required for outline;  migrations preserve existing notes; real D1/R2 multipart upload and resumed part; original bytes unchanged; ownership; streamed external upload; async STT and timestamps; retry avoids duplicate jobs; provider key errors unlock safely; DeepSeek outline and final notes; cached summary; no plaintext persisted keys; size/format/origin checks. 1.5 GiB metadata accepted; Korean fixed (ko); deletion occurs after note commit; premature/foreign deletion blocked; R2 and provider deletion verified; cleanup retry preserves note/transcript. External API responses mocked.');
+ console.log('PASS: encrypted credential persistence; no plaintext readback; no client key headers required after save; owner isolation; AES-GCM IV freshness and tamper rejection; partial replacement and deletion;  Whisper ko/v3; two bounded ranged streams to fal; private upload ACL; signed read URL; 24h expiration; separate correction and audit; raw text preserved; negation/number/formula preserved; malformed correction rejected; corrected input required for outline;  migrations preserve existing notes; real D1/R2 multipart upload and resumed part; original bytes unchanged; ownership; streamed external upload; async STT and timestamps; retry avoids duplicate jobs; provider key errors unlock safely; DeepSeek outline and final notes; cached summary; no plaintext persisted keys; size/format/origin checks. 1.5 GiB metadata accepted; Korean fixed (ko); deletion occurs after note commit; premature/foreign deletion blocked; R2 and provider deletion verified; cleanup retry preserves note/transcript. Python conversion API mocked; MP4 is never sent to Whisper. External API responses mocked.');
 }finally{await mf.dispose();}

@@ -5,6 +5,7 @@ import { UPLOAD_PART_BYTES } from '@/lib/types';
 import { cleanupMedia } from '@/lib/media-cleanup';
 import { advanceWhisper, falKey, pollWhisper, type WhisperJob } from '@/lib/whisper';
 import { z } from 'zod';
+import { converterConfig, needsConversion, cancelConversion, deleteConversion } from '@/lib/audio-conversion';
 import { deleteLecture } from '@/lib/lecture-delete';
 type Context={params:Promise<{id:string;action:string}>};
 type Job=WhisperJob & {provider:string;lecture_id:string;source_key:string;upload_id:string;media_type:string;ready:number;upload_url:string|null;remote_id:string|null;remote_status:string|null;lock_until:number;source_deleted_at:number|null;provider_deleted_at:number|null};
@@ -15,7 +16,7 @@ async function detail(id:string,lecture:Record<string,unknown>){
     db().prepare('SELECT ordinal,transcript,corrected_transcript,correction_audit,outline,start_seconds FROM chunks WHERE lecture_id=? ORDER BY ordinal').bind(id).all(),
     db().prepare('SELECT part_number,bytes FROM upload_parts WHERE lecture_id=? ORDER BY part_number').bind(id).all(),
   ]);
-  return {...lecture,cloud:job?1:0,provider:job?.provider,provider_expires_at:job?.provider_expires_at,remote_request_id:job?.remote_id,source_ready:job?.ready||0,source_deleted_at:job?.source_deleted_at,provider_deleted_at:job?.provider_deleted_at,remote_status:job?.remote_status,parts:parts.results.map(p=>Number(p.part_number)),uploaded_bytes:parts.results.reduce((a,p)=>a+Number(p.bytes),0),chunks:rows.results,uploaded:rows.results.length,completed:rows.results.filter(c=>c.outline!==null).length};
+  return {...lecture,cloud:job?1:0,provider:job?.provider,provider_expires_at:job?.provider_expires_at,remote_request_id:job?.remote_id,conversion_pending_cleanup:!!(job?.conversion_id&&!job.conversion_deleted_at),source_ready:job?.ready||0,source_deleted_at:job?.source_deleted_at,provider_deleted_at:job?.provider_deleted_at,remote_status:job?.remote_status,parts:parts.results.map(p=>Number(p.part_number)),uploaded_bytes:parts.results.reduce((a,p)=>a+Number(p.bytes),0),chunks:rows.results,uploaded:rows.results.length,completed:rows.results.filter(c=>c.outline!==null).length};
 }
 export async function GET(request:Request,context:Context){try{
   const user=owner(request),{id,action}=await context.params,lecture=await getLecture(id,user,action==='detail');
@@ -39,12 +40,25 @@ export async function GET(request:Request,context:Context){try{
 
 export async function POST(request:Request,context:Context){try{
   const user=owner(request,true),{id,action}=await context.params,lecture=await getLecture(id,user);
+  if(action==='pause'){
+    await db().prepare('UPDATE lectures SET paused=1 WHERE id=? AND owner=?').bind(id,user).run();
+    const job=await getJob(id);let conversionCancelled=true;
+    if(job?.conversion_id&&!job.audio_url){try{const config=await converterConfig(request);await cancelConversion(config,job.conversion_id);await deleteConversion(config,job.conversion_id);await db().prepare("UPDATE media_jobs SET remote_status='conversion_cancelled' WHERE lecture_id=?").bind(id).run();}catch{conversionCancelled=false;}}
+    return Response.json({paused:true,conversion_cancelled:conversionCancelled},{headers:noCache});
+  }
+  if(action==='resume'){
+    const job=await getJob(id);
+    if(lecture.paused&&job?.remote_status==='conversion_cancelled'&&job.conversion_id){
+      await db().prepare('UPDATE media_jobs SET conversion_id=NULL,audio_url=NULL,audio_expires_at=NULL,remote_status=NULL WHERE lecture_id=?').bind(id).run();
+    }
+    await db().prepare('UPDATE lectures SET paused=0 WHERE id=? AND owner=?').bind(id,user).run();return Response.json({resumed:true},{headers:noCache});}
+  if(lecture.paused&&action!=='cleanup-source')throw new ApiError(409,'중단된 강의입니다. 이어서 만들기를 눌러주세요.');
   if(action==='cleanup-source')return Response.json({cleanup:await cleanupMedia(id,user,request)},{headers:noCache});
   if(action==='upload-part'){
     const job=await getJob(id);if(!job)throw new ApiError(409,'새 강의에서 원본 파일을 올려주세요.');
     if(job.ready)throw new ApiError(409,'이미 파일 저장이 완료됐습니다.');
     const lease=Date.now()+120000;
-    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND ready=0 AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND status='deleting')").bind(lease,id,Date.now()).run();
+    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND ready=0 AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND (status='deleting' OR paused=1))").bind(lease,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'파일을 저장하거나 삭제 중입니다. 잠시 후 다시 시도해주세요.');
     try{
     const part=Number(new URL(request.url).searchParams.get('part')),count=Math.ceil(Number(lecture.bytes)/UPLOAD_PART_BYTES);
@@ -62,7 +76,7 @@ export async function POST(request:Request,context:Context){try{
   if(action==='finish-upload'){
     const job=await getJob(id);if(!job)throw new ApiError(404,'업로드를 찾을 수 없습니다.');
     if(job.ready)return Response.json({saved:true},{headers:noCache});
-    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND ready=0 AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND status='deleting')").bind(Date.now()+120000,id,Date.now()).run();
+    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND ready=0 AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+120000,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'파일 저장을 완료하는 중입니다. 잠시 후 다시 시도하세요.');
     try{
       const rows=await db().prepare('SELECT part_number,etag,bytes FROM upload_parts WHERE lecture_id=? ORDER BY part_number').bind(id).all();
@@ -82,9 +96,9 @@ export async function POST(request:Request,context:Context){try{
     if(lecture.notes)return Response.json({status:'completed'},{headers:noCache});
     const job=await getJob(id);if(!job?.ready)throw new ApiError(409,'먼저 파일 업로드를 완료해주세요.');
     if(job.remote_id)return Response.json({status:job.remote_status||'processing',request_id:job.remote_id},{headers:noCache});
-    if(job.provider==='fal')return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request)),{headers:noCache});
+    if(job.provider==='fal')return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request),needsConversion(job)?await converterConfig(request):undefined),{headers:noCache});
     const key=await speechKey(request);
-    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_id IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND status='deleting')").bind(Date.now()+2100000,id,Date.now()).run();
+    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_id IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+2100000,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'음성 인식 요청을 이미 준비 중입니다. 잠시 후 이어서 만들기를 눌러주세요.');
     try{
       let uploadUrl=job.upload_url;
@@ -106,7 +120,7 @@ export async function POST(request:Request,context:Context){try{
   }
   if(action==='speech-poll'){
     const job=await getJob(id);
-    if(job?.provider==='fal'&&!job.remote_id)return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request)),{headers:noCache});
+    if(job?.provider==='fal'&&!job.remote_id)return Response.json(await advanceWhisper(job,Number(lecture.bytes),await falKey(request),needsConversion(job)?await converterConfig(request):undefined),{headers:noCache});
     if(!job?.remote_id)throw new ApiError(409,'먼저 음성 인식을 시작해주세요.');
     if(job.remote_status==='completed')return Response.json({status:'completed'},{headers:noCache});
     const result=job.provider==='fal'?await pollWhisper(await falKey(request),job.remote_id):await speechRequest<SpeechResult>(await speechKey(request),`/transcript/${job.remote_id}`);
@@ -116,7 +130,7 @@ export async function POST(request:Request,context:Context){try{
     }
     if(result.status!=='completed')return Response.json({status:result.status},{headers:noCache});
     const chunks=transcriptChunks(result),duration=Math.ceil(result.audio_duration||0);
-    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_status!='completed' AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND status='deleting')").bind(Date.now()+120000,id,Date.now()).run();
+    const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_status!='completed' AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+120000,id,Date.now()).run();
     if(!lock.meta.changes)return Response.json({status:'processing'},{headers:noCache});
     try{
       await db().batch([
@@ -133,7 +147,7 @@ export async function POST(request:Request,context:Context){try{
     const row=await db().prepare('SELECT transcript,corrected_transcript FROM chunks WHERE lecture_id=? AND ordinal=?').bind(id,ordinal).first<{transcript:string|null;corrected_transcript:string|null}>();
     if(!row?.transcript)throw new ApiError(409,'원문 전사가 완료된 뒤 교정할 수 있습니다.');
     if(row.corrected_transcript)return Response.json({done:true},{headers:noCache});
-    const lock=await db().prepare("UPDATE chunks SET lock_until=? WHERE lecture_id=? AND ordinal=? AND lock_until<? AND corrected_transcript IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=chunks.lecture_id AND status='deleting')").bind(Date.now()+600000,id,ordinal,Date.now()).run();
+    const lock=await db().prepare("UPDATE chunks SET lock_until=? WHERE lecture_id=? AND ordinal=? AND lock_until<? AND corrected_transcript IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=chunks.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+600000,id,ordinal,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'대본을 이미 교정 중입니다. 잠시 후 이어서 시도하세요.');
     try{
       const contextRows=await db().prepare('SELECT ordinal,transcript FROM chunks WHERE lecture_id=? AND ordinal IN (?,?)').bind(id,ordinal-1,ordinal+1).all<{ordinal:number;transcript:string}>();
@@ -148,7 +162,7 @@ export async function POST(request:Request,context:Context){try{
     if(!row?.transcript)throw new ApiError(409,'전사문이 준비되지 않았습니다. 이전 방식의 미완료 강의는 원본 파일을 새 강의로 올려주세요.');
     if(!row.corrected_transcript)throw new ApiError(409,'문맥 교정을 완료한 뒤 구간을 정리할 수 있습니다.');
     if(row.outline)return Response.json({done:true},{headers:noCache});
-    const lock=await db().prepare("UPDATE chunks SET lock_until=? WHERE lecture_id=? AND ordinal=? AND lock_until<? AND outline IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=chunks.lecture_id AND status='deleting')").bind(Date.now()+600000,id,ordinal,Date.now()).run();
+    const lock=await db().prepare("UPDATE chunks SET lock_until=? WHERE lecture_id=? AND ordinal=? AND lock_until<? AND outline IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=chunks.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+600000,id,ordinal,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'이 구간을 이미 정리 중입니다. 잠시 후 다시 시도하세요.');
     try{
       const summary=await outline(key,row.corrected_transcript,String(lecture.title));
@@ -160,13 +174,13 @@ export async function POST(request:Request,context:Context){try{
     if(lecture.notes)return Response.json({notes:JSON.parse(String(lecture.notes)),cleanup:await cleanupMedia(id,user,request)},{headers:noCache});
     const key=await apiKey(request),rows=await db().prepare('SELECT ordinal,outline,corrected_transcript,start_seconds FROM chunks WHERE lecture_id=? ORDER BY ordinal').bind(id).all();
     if(!Number(lecture.total)||rows.results.length!==Number(lecture.total)||rows.results.some(r=>!r.outline||!r.corrected_transcript))throw new ApiError(409,'모든 전사 구간이 정리된 뒤 노트를 만들 수 있습니다.');
-    const lock=await db().prepare("UPDATE lectures SET status='summarizing',lock_until=? WHERE id=? AND lock_until<? AND notes IS NULL").bind(Date.now()+600000,id,Date.now()).run();
+    const lock=await db().prepare("UPDATE lectures SET status='summarizing',lock_until=? WHERE id=? AND lock_until<? AND notes IS NULL AND paused=0").bind(Date.now()+600000,id,Date.now()).run();
     if(!lock.meta.changes)throw new ApiError(409,'학습 노트를 이미 생성 중입니다. 잠시 후 다시 시도하세요.');
     try{
       const notes=await summarize(key,String(lecture.title),rows.results.map(r=>({start_seconds:r.start_seconds??Number(r.ordinal)*600,outline:r.outline})));
       await db().prepare("UPDATE lectures SET notes=?,status='complete',lock_until=0 WHERE id=?").bind(JSON.stringify(notes),id).run();
       return Response.json({notes,cleanup:await cleanupMedia(id,user,request)},{headers:noCache});
-    }catch(e){await db().prepare("UPDATE lectures SET status='transcribed',lock_until=0 WHERE id=? AND notes IS NULL").bind(id).run();throw e;}
+    }catch(e){await db().prepare("UPDATE lectures SET status='transcribed',lock_until=0 WHERE id=? AND notes IS NULL AND paused=0").bind(id).run();throw e;}
   }
   throw new ApiError(404,'요청을 찾을 수 없습니다.');
 }catch(e){return respondError(e);}}

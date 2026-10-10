@@ -4,6 +4,7 @@ import {GET as list,POST as create} from '../../app/api/lectures/route';
 import {GET as detail,POST as action,DELETE as remove} from '../../app/api/lectures/[id]/[action]/route';
 const realFetch=globalThis.fetch;
 let submissions=0,polls=0,uploads=0,deletions=0,corrections=0,cancellations=0;
+let conversionSubmissions=0,conversionPolls=0,conversionDeletes=0;const conversions=new Map<string,{status:string}>();
 globalThis.fetch=async(input:RequestInfo|URL,init?:RequestInit)=>{
  const url=String(input),headers=new Headers(init?.headers);
  // Validate redirect mode in the real Workers Request implementation before mocking I/O.
@@ -25,7 +26,7 @@ globalThis.fetch=async(input:RequestInfo|URL,init?:RequestInit)=>{
  if(url.startsWith('https://v3b.fal.media/')){
    if(url.includes('/sign')){
      if(headers.get('Authorization')!=='Bearer read-only-cdn-token'||JSON.parse(init?.body as string).scope[0]!=='read')throw new Error('Invalid signing');
-     return new Response('https://v3b.fal.media/files/b/store/media.mp4?identity=read-only');
+     return new Response(url.slice(0,-5)+'?identity=read-only');
    }
    if(url.includes('/complete')){
      const parts=JSON.parse(init?.body as string).parts;
@@ -39,12 +40,31 @@ globalThis.fetch=async(input:RequestInfo|URL,init?:RequestInit)=>{
    if(bytes[0]!== (first?7:9)||bytes.at(-1)!==(first?9:8))throw new Error('Invalid range bytes');
    return Response.json({etag:`part-${first?1:2}`});
  }
+ if(url.startsWith('https://converter.test/')){
+   if(headers.get('Authorization')!=='Bearer converter-unit-test-key-1234567890123456')return Response.json({error:'unauthorized'},{status:401});
+   const id=url.split('/').pop()!;
+   if(init?.method==='POST'&&url.endsWith('/cancel')){const cancelId=url.split('/').at(-2)!;if(conversions.has(cancelId))conversions.set(cancelId,{status:'cancelled'});return Response.json({id:cancelId,status:'cancelled'});}
+   if(init?.method==='DELETE'){conversionDeletes++;conversions.delete(id);return Response.json({deleted:true});}
+   if(init?.method==='POST'){
+     const body=JSON.parse(init.body as string);if(!body.source_url.includes('v3b.fal.media/files/')||!body.source_url.includes('identity=read-only')||![16*1024*1024+64,64].includes(body.bytes))throw new Error('Conversion requires original signed video');
+     if(!conversions.has(body.id)){conversionSubmissions++;conversions.set(body.id,{status:'processing'});}
+     return Response.json({id:body.id,status:'processing'},{status:202});
+   }
+   if(id.startsWith('ffff'))return Response.json({id,status:'error'});
+   if(id.startsWith('eeee'))return Response.json({id,status:'completed',audio_url:`https://converter.test/audio/${id}.mp4?token=bad`,expires_at:Date.now()+86400000});
+   if(!conversions.has(id))return Response.json({error:'not found'},{status:404});
+   conversionPolls++;
+   if(conversions.get(id)!.status==='cancelled')return Response.json({id,status:'cancelled'});
+   if(conversionPolls===1)return Response.json({id,status:'processing'});
+   conversions.set(id,{status:'completed'});
+   return Response.json({id,status:'completed',audio_url:`https://converter.test/audio/${id}.mp3?expires=123&token=signed`,expires_at:Date.now()+86400000});
+ }
  if(url.startsWith('https://queue.fal.run/')){
    if(!headers.get('Authorization')?.startsWith('Key '))throw new Error('Missing inference key');
    if(init?.method==='PUT'&&url.endsWith('/cancel')){cancellations++;return Response.json({status:'CANCELLATION_REQUESTED'},{status:202});}
    if(init?.method==='POST'){
      submissions++;const body=JSON.parse(init.body as string);
-     if(body.language!=='ko'||body.version!=='3'||body.task!=='transcribe'||body.audio_url!=='https://v3b.fal.media/files/b/store/media.mp4?identity=read-only'||headers.get('X-Fal-Store-IO')!=='0')throw new Error('Invalid Whisper configuration');
+     if(body.language!=='ko'||body.version!=='3'||body.task!=='transcribe'||!/^https:\/\/(converter.test\/audio\/[a-f0-9-]+\.mp3|v3b.fal.media\/files\/b\/store\/audio\.mp3)\?/.test(body.audio_url)||headers.get('X-Fal-Store-IO')!=='0')throw new Error('Invalid Whisper configuration');
      return Response.json({request_id:'remote-job-1'});
    }
    if(url.endsWith('/status')){polls++;return Response.json({status:polls===1?'IN_PROGRESS':'COMPLETED'});}
@@ -86,6 +106,7 @@ globalThis.fetch=async(input:RequestInfo|URL,init?:RequestInit)=>{
 };
 export default {async fetch(request:Request){
  const path=new URL(request.url).pathname;
+ if(path==='/test-conversions')return Response.json({conversionSubmissions,conversionPolls,conversionDeletes});
  if(path==='/test-cancels')return Response.json({cancellations});
  if(path==='/test-stats')return Response.json({submissions,polls,uploads,deletions,corrections});
  if(path==='/api/lectures/settings')return request.method==='GET'?settingsGet(request):request.method==='DELETE'?settingsDelete(request):settingsSave(request);

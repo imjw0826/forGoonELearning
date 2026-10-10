@@ -1,3 +1,4 @@
+import { converterConfig, deleteConversion } from './audio-conversion';
 import { ApiError, bucket, db, getLecture, speechKey } from './server';
 import { cancelWhisper, falKey } from './whisper';
 import { speechRequest } from './speech';
@@ -12,7 +13,7 @@ export async function deleteLecture(id:string,user:string,request:Request){
     .bind(lease,id,user,now,now,now).run();
   if(!lock.meta.changes)throw new ApiError(409,'현재 처리 중인 강의입니다. 잠시 후 삭제해주세요.');
   try{
-    const job=await db().prepare('SELECT * FROM media_jobs WHERE lecture_id=?').bind(id).first<{source_key:string;upload_id:string;ready:number;provider:string;remote_id:string|null;remote_status:string|null;provider_deleted_at:number|null;provider_expires_at:number|null}>();
+    const job=await db().prepare('SELECT * FROM media_jobs WHERE lecture_id=?').bind(id).first<{source_key:string;upload_id:string;ready:number;provider:string;remote_id:string|null;remote_status:string|null;provider_deleted_at:number|null;provider_expires_at:number|null;conversion_id:string|null;conversion_deleted_at:number|null}>();
     const chunks=await db().prepare("SELECT audio_key FROM chunks WHERE lecture_id=? AND audio_key!=''").bind(id).all<{audio_key:string}>();
     // Keep the deleting record on storage failure, so cleanup remains retryable.
     if(job&&!job.ready){
@@ -32,6 +33,10 @@ export async function deleteLecture(id:string,user:string,request:Request){
       }
     }else if(job?.remote_id&&!job.provider_deleted_at){
       try{await speechRequest(await speechKey(request),`/transcript/${job.remote_id}`,{method:'DELETE'});providerCleanup='deleted';}
+      catch{providerCleanup='pending';}
+    }
+    if(job?.conversion_id&&!job.conversion_deleted_at){
+      try{await deleteConversion(await converterConfig(request),job.conversion_id);}
       catch{providerCleanup='pending';}
     }
     await db().batch([

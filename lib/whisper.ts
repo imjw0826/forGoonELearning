@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { advanceConversion, needsConversion, type ConversionJob, type ConverterConfig } from './audio-conversion';
 import { resolveProviderKey } from './key-vault';
 import { ApiError, bucket, db } from './server';
 import type { SpeechResult } from './speech';
 
 export const FAL_PART_BYTES=10*1024*1024;
 const LIFECYCLE=JSON.stringify({expiration_duration_seconds:86400,initial_acl:{default:'forbid',rules:[]}});
-export type WhisperJob={lecture_id:string;source_key:string;media_type:string;upload_url:string|null;remote_id:string|null;remote_status:string|null;transfer_url:string|null;transfer_parts:string|null;transfer_ready:number;provider_expires_at:number|null};
+export type WhisperJob=ConversionJob & {lecture_id:string;source_key:string;media_type:string;upload_url:string|null;remote_id:string|null;remote_status:string|null;transfer_url:string|null;transfer_parts:string|null;transfer_ready:number;provider_expires_at:number|null};
 export async function falKey(request:Request){return resolveProviderKey(request,'fal','x-fal-key','fal');}
 function cdnUrl(value:string){let url:URL;try{url=new URL(value);}catch{throw new ApiError(502,'Whisper 파일 주소를 확인하지 못했습니다.');}if(url.protocol!=='https:'||!/^v3[a-z0-9]*\.fal\.media$/.test(url.hostname)||url.username||url.password)throw new ApiError(502,'Whisper 파일 주소를 확인하지 못했습니다.');return url;}
 async function checkedFetch(url:string,options:RequestInit={},stage='Whisper 연결',accepted:number[]=[]){
@@ -33,11 +34,18 @@ async function jsonRequest<T>(key:string,url:string,options:RequestInit={},stage
 
 // Follow fal's official SDK multipart protocol, but stream only one R2 range per request.
 // Private CDN input and a short-lived read-only signed URL keep the site private.
-export async function advanceWhisper(job:WhisperJob,bytes:number,key:string){
+export async function advanceWhisper(job:WhisperJob,bytes:number,key:string,converter?:ConverterConfig){
   if(job.remote_id)return {status:job.remote_status||'queued',request_id:job.remote_id};
-  const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_id IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND status='deleting')").bind(Date.now()+180000,job.lecture_id,Date.now()).run();
+  const lock=await db().prepare("UPDATE media_jobs SET lock_until=? WHERE lecture_id=? AND lock_until<? AND remote_id IS NULL AND NOT EXISTS (SELECT 1 FROM lectures WHERE id=media_jobs.lecture_id AND (status='deleting' OR paused=1))").bind(Date.now()+180000,job.lecture_id,Date.now()).run();
   if(!lock.meta.changes)throw new ApiError(409,'Whisper 전송을 준비 중입니다. 잠시 후 이어서 시도하세요.');
   try{
+    if(needsConversion(job)&&!converter)throw new ApiError(400,'API 연결에서 변환 서버 주소와 연결 키를 저장해주세요.');
+    let audioUrl:string|null=null;
+    if(needsConversion(job)&&job.conversion_id){
+      audioUrl=await advanceConversion(job,bytes,converter!);
+      if(!audioUrl&&job.conversion_id)return {status:'converting',delay_ms:5000};
+    }
+    if(!audioUrl){
     if(job.provider_expires_at&&job.provider_expires_at<Date.now()+600000){
       job.upload_url=null;job.transfer_url=null;job.transfer_parts=null;job.transfer_ready=0;
       await db().prepare('UPDATE media_jobs SET upload_url=NULL,transfer_url=NULL,transfer_parts=NULL,transfer_ready=0,provider_expires_at=NULL WHERE lecture_id=?').bind(job.lecture_id).run();
@@ -70,7 +78,14 @@ export async function advanceWhisper(job:WhisperJob,bytes:number,key:string){
     const file=cdnUrl(job.upload_url!);
     const signed=await checkedFetch(`${file.origin}${file.pathname}/sign`,{method:'POST',headers:{Authorization:`Bearer ${token.token}`,'Content-Type':'application/json'},body:JSON.stringify({duration:86400,scope:['read']})},'fal 파일 읽기 인증');
     const signedUrl=(await signed.text()).trim();cdnUrl(signedUrl);
-    const submitted=await jsonRequest<{request_id:string}>(key,'https://queue.fal.run/fal-ai/wizper',{method:'POST',headers:{'Content-Type':'application/json','X-Fal-Store-IO':'0','X-Fal-Object-Lifecycle-Preference':LIFECYCLE},body:JSON.stringify({audio_url:signedUrl,task:'transcribe',language:'ko',version:'3',chunk_level:'segment',merge_chunks:true,max_segment_len:29})},'Whisper 전사 요청');
+    if(needsConversion(job)){
+      audioUrl=await advanceConversion(job,bytes,converter!,signedUrl);
+      if(!audioUrl)return {status:'converting',delay_ms:5000};
+    }else audioUrl=signedUrl;
+    }
+    const active=await db().prepare('SELECT paused FROM lectures WHERE id=?').bind(job.lecture_id).first<{paused:number}>();
+    if(active?.paused)throw new ApiError(409,'중단된 강의입니다. 이어서 만들기를 눌러주세요.');
+    const submitted=await jsonRequest<{request_id:string}>(key,'https://queue.fal.run/fal-ai/wizper',{method:'POST',headers:{'Content-Type':'application/json','X-Fal-Store-IO':'0','X-Fal-Object-Lifecycle-Preference':LIFECYCLE},body:JSON.stringify({audio_url:audioUrl,task:'transcribe',language:'ko',version:'3',chunk_level:'segment',merge_chunks:true,max_segment_len:29})},'Whisper 전사 요청');
     if(!submitted.request_id||!/^[a-zA-Z0-9-]{1,100}$/.test(submitted.request_id))throw new ApiError(502,'Whisper 요청 번호를 확인하지 못했습니다.');
     await db().batch([db().prepare("UPDATE media_jobs SET remote_id=?,remote_status='queued',lock_until=0 WHERE lecture_id=?").bind(submitted.request_id,job.lecture_id),db().prepare("UPDATE lectures SET status='transcribing' WHERE id=?").bind(job.lecture_id)]);
     return {status:'queued',request_id:submitted.request_id};

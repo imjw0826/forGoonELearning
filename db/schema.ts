@@ -4,6 +4,7 @@ export const lectures = sqliteTable("lectures", {
   title: text("title").notNull(), filename: text("filename").notNull(),
   bytes: integer("bytes").notNull(), duration: integer("duration").notNull(),
   total: integer("total").notNull(), status: text("status").notNull().default("uploading"),
+  paused: integer("paused").notNull().default(0),
   notes: text("notes"), created: integer("created").notNull(),
   lockUntil: integer("lock_until").notNull().default(0),
 }, t => [index("idx_lectures_owner_created").on(t.owner, t.created)]);
@@ -18,6 +19,7 @@ export const mediaJobs = sqliteTable("media_jobs", {
   lectureId: text("lecture_id").primaryKey().references(() => lectures.id, {onDelete:"cascade"}),
   provider: text("provider").notNull().default("assemblyai"),
   transferUrl: text("transfer_url"), transferParts: text("transfer_parts"), transferReady: integer("transfer_ready").notNull().default(0), providerExpiresAt: integer("provider_expires_at"),
+  conversionId: text("conversion_id"), audioUrl: text("audio_url"), audioExpiresAt: integer("audio_expires_at"), conversionDeletedAt: integer("conversion_deleted_at"),
   sourceKey: text("source_key").notNull(), uploadId: text("upload_id").notNull(),
   mediaType: text("media_type").notNull(), ready: integer("ready").notNull().default(0),
   uploadUrl: text("upload_url"), remoteId: text("remote_id"),
