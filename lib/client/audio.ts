@@ -65,16 +65,16 @@ export async function extractMp3(file: File, onProgress: (p: ConvertProgress) =>
   });
 
   const origin = window.location.origin;
-  await ffmpeg.load({
-    coreURL: `${origin}/ffmpeg/core/ffmpeg-core.js`,
-    wasmURL: `${origin}/ffmpeg/core/ffmpeg-core.wasm`,
-  });
-
-  // A neutral name avoids ffmpeg treating characters like ':' as a protocol prefix.
-  const ext = (file.name.split(".").pop() ?? "bin").replace(/[^a-zA-Z0-9]/g, "") || "bin";
-  const input = new File([file], `input.${ext}`, { type: file.type });
-  const dir = "/in";
   try {
+    await ffmpeg.load({
+      coreURL: `${origin}/ffmpeg/core/ffmpeg-core.js`,
+      wasmURL: `${origin}/ffmpeg/core/ffmpeg-core.wasm`,
+    });
+
+    // A neutral name avoids ffmpeg treating characters like ':' as a protocol prefix.
+    const ext = (file.name.split(".").pop() ?? "bin").replace(/[^a-zA-Z0-9]/g, "") || "bin";
+    const input = new File([file], `input.${ext}`, { type: file.type });
+    const dir = "/in";
     await ffmpeg.createDir(dir);
     await ffmpeg.mount(FFFSType.WORKERFS, { files: [input] }, dir);
     const code = await ffmpeg.exec([
@@ -93,9 +93,13 @@ export async function extractMp3(file: File, onProgress: (p: ConvertProgress) =>
       throw new Error(`오디오 추출에 실패했습니다${hint ? `: ${hint}` : ". 오디오 트랙이 있는 파일인지 확인해주세요."}`);
     }
     const data = (await ffmpeg.readFile("/out.mp3")) as Uint8Array;
+    if (!data.byteLength || data.byteLength > MAX_DIRECT_MP3) {
+      throw new Error("변환된 오디오가 45 MiB를 초과하거나 비어 있습니다. 강의를 짧게 나눠 올려주세요.");
+    }
     onProgress({ seconds: duration ?? 0, duration, ratio: 1 });
     return new File([data.slice().buffer as ArrayBuffer], "audio.mp3", { type: "audio/mpeg" });
   } finally {
     ffmpeg.terminate();
   }
 }
+

@@ -28,7 +28,11 @@ MATERIALS_BUCKET = "materials"
 CORRECT_CONCURRENCY = 4
 SECTION_CONCURRENCY = 3
 MAX_CHUNKS_PER_SECTION = 6
-MAX_PART_BYTES = 100 * 1024 * 1024
+MAX_PART_BYTES = 8 * 1024 * 1024
+MAX_MEDIA_BYTES = 2 * 1024 ** 3
+MAX_PARTS = MAX_MEDIA_BYTES // MAX_PART_BYTES
+MAX_AUDIO_BYTES = 45 * 1024 * 1024
+CONVERSION_TIMEOUT_SEC = 2 * 60 * 60
 
 
 def missing() -> list[str]:
@@ -41,3 +45,4 @@ def missing() -> list[str]:
         "WORKER_SECRET": WORKER_SECRET,
     }
     return [k for k, v in required.items() if not v]
+

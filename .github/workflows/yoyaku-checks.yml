@@ -1,0 +1,37 @@
+name: Yoyaku checks
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+    inputs:
+      large_upload:
+        description: Run the 1.5 GiB synthetic upload and FFmpeg test
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: worker/requirements.txt
+      - run: npm ci
+      - run: npm run test:upload
+      - run: npm run typecheck
+      - run: npm run build -- --webpack
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -r worker/requirements.txt
+      - run: python -m unittest discover -s worker/tests -v
+        env:
+          PYTHONPATH: worker
+          YOYAKU_LARGE_TEST: ${{ inputs.large_upload && '1' || '0' }}

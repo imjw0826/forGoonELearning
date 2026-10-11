@@ -8,6 +8,7 @@ import { api } from "@/lib/client/api";
 import { isVideo, needsConversion } from "@/lib/client/audio";
 import { processAndUploadAudio, uploadMaterial, type AudioMode, type AudioStage } from "@/lib/client/upload";
 import { formatBytes, formatTime } from "@/lib/format";
+import { SERVER_CONVERSION_THRESHOLD, validateMediaSize } from "@/lib/upload-limits";
 import { useAccess } from "./AccessProvider";
 import { ProgressBar } from "./ProgressBar";
 
@@ -46,6 +47,8 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
 
   const run = async () => {
     if (!media) return;
+    try { validateMediaSize(media.size); }
+    catch (err) { setError((err as Error).message); return; }
     setRunning(true);
     setError(null);
     setWarnings([]);
@@ -185,7 +188,12 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
               <FileUp className="h-7 w-7 text-zinc-400" />
               <span className="mt-2 text-sm font-medium text-zinc-700">클릭해서 파일 선택</span>
               <span className="mt-0.5 text-xs text-zinc-500">MP4, MOV, MKV, WEBM, MP3, M4A, WAV … (1~2GB 영상 가능)</span>
-              <input type="file" accept="video/*,audio/*,.mkv,.m4a" className="hidden" onChange={(e) => setMedia(e.target.files?.[0] ?? null)} />
+              <input type="file" accept="video/*,audio/*,.mkv,.m4a" className="hidden" onChange={(e) => {
+                const file = e.target.files?.[0] ?? null;
+                setMedia(file);
+                setError(null);
+                setMode(file && file.size >= SERVER_CONVERSION_THRESHOLD ? "server" : "browser");
+              }} />
             </label>
           )}
         </div>
@@ -194,8 +202,8 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
           <fieldset disabled={started}>
             <span className="text-sm font-medium text-zinc-700">음성 추출 방식</span>
             <div className="mt-1 grid gap-2 sm:grid-cols-2">
-              <ModeOption checked={mode === "browser"} onChange={() => setMode("browser")} title="브라우저에서 변환 (권장)" desc="영상을 올리지 않고 이 컴퓨터에서 mp3만 뽑아 올려요. 빠르고 데이터를 아껴요." />
-              <ModeOption checked={mode === "server"} onChange={() => setMode("server")} title="서버에서 변환" desc="원본 영상을 Railway 서버로 올려 ffmpeg로 변환해요. 브라우저 변환이 안 될 때 사용하세요." />
+              <ModeOption checked={mode === "browser"} onChange={() => setMode("browser")} title="브라우저에서 변환" desc="이 컴퓨터에서 mp3를 뽑아 올려요. 큰 영상은 기기의 메모리와 성능에 따라 실패할 수 있어요." />
+              <ModeOption checked={mode === "server"} onChange={() => setMode("server")} title="서버에서 변환 (대용량 권장)" desc="원본을 나눠 올린 뒤 서버에서 변환해요. 512 MiB 이상 파일은 기본으로 선택됩니다." />
             </div>
           </fieldset>
         )}
@@ -320,3 +328,4 @@ function ModeOption({ checked, onChange, title, desc }: { checked: boolean; onCh
     </label>
   );
 }
+

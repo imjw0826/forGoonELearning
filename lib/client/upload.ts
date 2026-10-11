@@ -1,6 +1,7 @@
 "use client";
 import type { PipelineState } from "@/lib/types";
 import { api } from "./api";
+import { UPLOAD_PART_BYTES, validateMediaSize } from "../upload-limits";
 import { extractMp3, needsConversion, type ConvertProgress } from "./audio";
 
 /** PUT with upload progress (fetch can't report upload progress). */
@@ -8,6 +9,9 @@ function xhrPut(url: string, body: Blob, headers: Record<string, string>, onProg
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
+    xhr.timeout = 10 * 60 * 1000;
+    xhr.ontimeout = () => reject(new Error("업로드 시간이 초과됐습니다. 네트워크를 확인하고 다시 시도해주세요."));
+    xhr.onabort = () => reject(new Error("업로드가 취소됐습니다."));
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
     xhr.onload = () =>
@@ -36,7 +40,7 @@ export type AudioStage =
   | { stage: "fallback"; reason: string }
   | { stage: "done" };
 
-const PART_SIZE = 48 * 1024 * 1024;
+const PART_SIZE = UPLOAD_PART_BYTES;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Uploads the original file to the Railway worker in parts; the worker runs ffmpeg and stores the mp3. */
@@ -67,12 +71,13 @@ async function convertOnServer(lectureId: string, file: File, onStage: (s: Audio
   const res = await fetch(`${workerUrl}/uploads/${lectureId}/complete`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-upload-token": token },
-    body: JSON.stringify({ parts, filename: file.name }),
+    body: JSON.stringify({ parts, filename: file.name, bytes: file.size }),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`서버 변환 요청 실패 (${res.status}): ${(await res.text()).slice(0, 200)}`);
 
   onStage({ stage: "server-convert" });
-  const deadline = Date.now() + 40 * 60 * 1000;
+  const deadline = Date.now() + 125 * 60 * 1000;
   while (Date.now() < deadline) {
     await sleep(3000);
     const { state } = await api<{ state: PipelineState }>(`/api/lectures/${lectureId}`);
@@ -93,6 +98,7 @@ export async function processAndUploadAudio(
   onStage: (s: AudioStage) => void,
   mode: AudioMode = "browser",
 ) {
+  validateMediaSize(file.size);
   if (mode === "server") {
     await convertOnServer(lectureId, file, onStage);
     onStage({ stage: "done" });
@@ -132,3 +138,4 @@ export async function uploadMaterial(lectureId: string, file: File, onProgress?:
     body: { path, filename: file.name, size: file.size },
   });
 }
+

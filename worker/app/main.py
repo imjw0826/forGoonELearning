@@ -4,12 +4,15 @@ import asyncio
 import hmac
 import logging
 import os
+import shutil
+from uuid import UUID
+from weakref import WeakValueDictionary
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import config, media, pipeline, supa
 
@@ -20,6 +23,16 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 Kind = Literal["extract", "summarize"]
 _tasks: dict[str, asyncio.Task] = {}
+_upload_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def upload_lock(lecture_id: str) -> asyncio.Lock:
+    lock = _upload_locks.get(lecture_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _upload_locks[lecture_id] = lock
+    return lock
+
 
 
 def _start(kind: str, lecture_id: str, coro_factory) -> bool:
@@ -33,8 +46,11 @@ def _start(kind: str, lecture_id: str, coro_factory) -> bool:
         try:
             await coro_factory()
             log.info("%s finished", key)
-        except Exception:
+        except Exception as exc:
             log.exception("%s failed", key)
+            if kind in ("extract", "summarize"):
+                column = "extract_error" if kind == "extract" else "summary_error"
+                await supa.update("lectures", {"id": f"eq.{lecture_id}"}, {column: str(exc)[:500]})
         finally:
             _tasks.pop(key, None)
 
@@ -74,7 +90,7 @@ async def resume_jobs() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    asyncio.get_running_loop().call_later(2, lambda: asyncio.ensure_future(resume_jobs()))
+    await resume_jobs()
     yield
 
 
@@ -95,6 +111,11 @@ def require_secret(authorization: str | None) -> None:
 
 
 def require_upload_token(lecture_id: str, token: str | None) -> None:
+    try:
+        if str(UUID(lecture_id)) != lecture_id:
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(400, "잘못된 강의 ID")
     if not media.verify_upload_token(lecture_id, token or ""):
         raise HTTPException(401, "업로드 토큰이 유효하지 않습니다. 페이지를 새로고침해주세요.")
 
@@ -145,35 +166,54 @@ async def jobs(kind: Kind, body: JobRequest, authorization: str | None = Header(
 @app.put("/uploads/{lecture_id}/parts/{n}")
 async def upload_part(lecture_id: str, n: int, request: Request, x_upload_token: str | None = Header(None)):
     require_upload_token(lecture_id, x_upload_token)
-    if n < 0 or n > 100_000:
+    if not 0 <= n < config.MAX_PARTS:
         raise HTTPException(400, "잘못된 파트 번호")
-    d = media.upload_dir(lecture_id)
-    d.mkdir(parents=True, exist_ok=True)
-    final = media.part_path(lecture_id, n)
-    tmp = final.with_suffix(".tmp")
-    size = 0
-    with tmp.open("wb") as f:
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > config.MAX_PART_BYTES:
-                tmp.unlink(missing_ok=True)
-                raise HTTPException(413, "파트가 너무 큽니다.")
-            f.write(chunk)
-    os.replace(tmp, final)
-    return {"part": n, "size": size}
+    async with upload_lock(lecture_id):
+        if is_running("convert", lecture_id):
+            raise HTTPException(409, "변환 중에는 원본을 변경할 수 없습니다.")
+        d = media.upload_dir(lecture_id)
+        d.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(d).free < config.MAX_PART_BYTES + 128 * 1024 ** 2:
+            raise HTTPException(507, "서버 저장 공간이 부족합니다.")
+        final = media.part_path(lecture_id, n)
+        tmp = final.with_suffix(".tmp")
+        size = 0
+        try:
+            with tmp.open("wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > config.MAX_PART_BYTES:
+                        raise HTTPException(413, "파트가 너무 큽니다.")
+                    await asyncio.to_thread(f.write, chunk)
+            if not size:
+                raise HTTPException(400, "빈 파트는 업로드할 수 없습니다.")
+            os.replace(tmp, final)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"part": n, "size": size}
 
 
 class CompleteRequest(BaseModel):
-    parts: int
-    filename: str
+    parts: int = Field(ge=1, le=config.MAX_PARTS, strict=True)
+    filename: str = Field(min_length=1, max_length=300)
+    bytes: int = Field(gt=0, le=config.MAX_MEDIA_BYTES, strict=True)
 
 
 @app.post("/uploads/{lecture_id}/complete")
 async def upload_complete(lecture_id: str, body: CompleteRequest, x_upload_token: str | None = Header(None)):
     require_upload_token(lecture_id, x_upload_token)
-    missing = [n for n in range(body.parts) if not media.part_path(lecture_id, n).exists()]
-    if body.parts < 1 or missing:
-        raise HTTPException(400, f"누락된 파트가 있습니다: {missing[:5]}")
-    await supa.update("lectures", {"id": f"eq.{lecture_id}"}, {"audio_status": "converting", "audio_error": None})
-    _start("convert", lecture_id, lambda: media.convert(lecture_id, body.parts, body.filename[:300]))
-    return {"accepted": True}
+    async with upload_lock(lecture_id):
+        # A lost completion response must not restart or reject an active conversion.
+        if is_running("convert", lecture_id):
+            return {"accepted": True}
+        expected_parts = (body.bytes + config.MAX_PART_BYTES - 1) // config.MAX_PART_BYTES
+        if body.parts != expected_parts:
+            raise HTTPException(400, "파일 크기와 파트 수가 일치하지 않습니다.")
+        for n in range(body.parts):
+            part = media.part_path(lecture_id, n)
+            expected = min(config.MAX_PART_BYTES, body.bytes - n * config.MAX_PART_BYTES)
+            if not part.exists() or part.stat().st_size != expected:
+                raise HTTPException(400, f"누락되거나 불완전한 파트가 있습니다: {n}")
+        await supa.update("lectures", {"id": f"eq.{lecture_id}"}, {"audio_status": "converting", "audio_error": None})
+        _start("convert", lecture_id, lambda: media.convert(lecture_id, body.parts, body.filename))
+        return {"accepted": True}
