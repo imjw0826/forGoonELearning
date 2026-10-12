@@ -34,6 +34,12 @@ MAX_PARTS = MAX_MEDIA_BYTES // MAX_PART_BYTES
 MAX_AUDIO_BYTES = 45 * 1024 * 1024
 CONVERSION_TIMEOUT_SEC = 2 * 60 * 60
 
+OCR_LANGUAGES = _env("OCR_LANGUAGES", "kor+eng+chi_sim+chi_tra")
+MAX_PDF_BYTES = 50 * 1024 * 1024
+MAX_PDF_PAGES = 200
+MAX_MATERIAL_CHARS = 200_000
+PDF_ANALYSIS_TIMEOUT_SEC = 30 * 60
+
 
 def missing() -> list[str]:
     """Names of required settings that are not configured yet."""

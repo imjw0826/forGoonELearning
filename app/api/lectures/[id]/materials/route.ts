@@ -21,7 +21,9 @@ export const POST = handle(async (req: Request, ctx: Ctx) => {
   try {
     extracted = await extractMaterialText(filename, await blob.arrayBuffer());
     if (extracted == null) warning = "지원하지 않는 형식이라 텍스트를 추출하지 못했습니다 (PDF/PPTX/DOCX/TXT 권장).";
-    else if (!extracted.trim()) warning = "텍스트가 없는 파일입니다 (스캔 이미지 PDF일 수 있습니다).";
+    else if (!extracted.trim()) warning = filename.toLowerCase().endsWith(".pdf")
+      ? "스캔 PDF입니다. 추출·요약을 실행하면 서버에서 이미지 글자를 자동으로 읽습니다."
+      : "텍스트가 없는 파일입니다.";
   } catch (err) {
     warning = `텍스트 추출 실패: ${err instanceof Error ? err.message : String(err)}`;
   }

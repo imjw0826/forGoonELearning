@@ -14,7 +14,7 @@ import re
 import time
 from typing import Any
 
-from . import config, fal, llm, supa
+from . import config, fal, llm, supa, pdf_ocr
 from .chunking import build_chunks
 from .prompts import correction_messages, plan_messages, section_messages
 
@@ -43,9 +43,14 @@ async def update_lecture(lecture_id: str, patch: dict[str, Any]) -> None:
 
 async def materials_text(lecture_id: str) -> str:
     rows = await supa.select(
-        "materials", {"select": "filename,extracted_text", "lecture_id": f"eq.{lecture_id}", "order": "created_at"}
+        "materials", {"select": "id,lecture_id,filename,storage_path,extracted_text", "lecture_id": f"eq.{lecture_id}", "order": "created_at"}
     )
-    return "\n\n".join(f"【{r['filename']}】\n{r['extracted_text']}" for r in rows if (r.get("extracted_text") or "").strip())
+    texts = []
+    for row in rows:
+        text = await pdf_ocr.material_text(row)
+        if text.strip():
+            texts.append(f"【{row['filename']}】\n{text}")
+    return "\n\n".join(texts)
 
 
 def lecture_title(lecture: dict[str, Any]) -> str:
