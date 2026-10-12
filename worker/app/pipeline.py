@@ -124,21 +124,23 @@ async def _correct(lecture: dict[str, Any]) -> None:
     pending = [c for c in chunks if c.get("corrected_text") is None]
     materials = await materials_text(lecture_id)
     title = lecture_title(lecture)
-    sem = asyncio.Semaphore(config.CORRECT_CONCURRENCY)
 
     async def one(c: dict[str, Any]) -> None:
-        async with sem:
-            corrected = await llm.chat(
-                correction_messages(title, materials, (raw_by_idx.get(c["idx"] - 1) or "")[-300:], c["raw_text"]),
-                temperature=0.2,
-            )
-            await supa.update(
-                "transcript_chunks",
-                {"lecture_id": f"eq.{lecture_id}", "idx": f"eq.{c['idx']}"},
-                {"corrected_text": corrected},
-            )
+        corrected = await llm.chat(
+            correction_messages(title, materials, (raw_by_idx.get(c["idx"] - 1) or "")[-300:], c["raw_text"]),
+            temperature=0.2,
+        )
+        await supa.update(
+            "transcript_chunks",
+            {"lecture_id": f"eq.{lecture_id}", "idx": f"eq.{c['idx']}"},
+            {"corrected_text": corrected},
+        )
 
-    results = await asyncio.gather(*(one(c) for c in pending), return_exceptions=True)
+    try:
+        results = await llm.run_batch(pending, one, config.CORRECT_CONCURRENCY)
+    except llm.DeepSeekAuthenticationError as exc:
+        await update_lecture(lecture_id, {"extract_error": str(exc)})
+        raise
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
         msg = f"대본 교정 중 오류 ({len(errors)}개 구간): {errors[0]}"
@@ -302,22 +304,24 @@ async def _write(lecture: dict[str, Any]) -> None:
     materials = await materials_text(lecture_id)
     outline = [s["title"] for s in sections]
     title = lecture_title(lecture)
-    sem = asyncio.Semaphore(config.SECTION_CONCURRENCY)
 
     async def one(s: dict[str, Any]) -> None:
-        async with sem:
-            transcript = "\n\n".join(
-                c["corrected_text"] or c["raw_text"] for c in chunks if s["start_chunk"] <= c["idx"] <= s["end_chunk"]
-            )
-            content = await llm.chat(
-                section_messages(title, materials, outline, s["idx"] + 1, s["title"], transcript), temperature=0.3
-            )
-            s["content"] = tidy_section(content)
-            await supa.update(
-                "note_sections", {"lecture_id": f"eq.{lecture_id}", "idx": f"eq.{s['idx']}"}, {"content": s["content"]}
-            )
+        transcript = "\n\n".join(
+            c["corrected_text"] or c["raw_text"] for c in chunks if s["start_chunk"] <= c["idx"] <= s["end_chunk"]
+        )
+        content = await llm.chat(
+            section_messages(title, materials, outline, s["idx"] + 1, s["title"], transcript), temperature=0.3
+        )
+        s["content"] = tidy_section(content)
+        await supa.update(
+            "note_sections", {"lecture_id": f"eq.{lecture_id}", "idx": f"eq.{s['idx']}"}, {"content": s["content"]}
+        )
 
-    results = await asyncio.gather(*(one(s) for s in sections if s.get("content") is None), return_exceptions=True)
+    try:
+        results = await llm.run_batch([s for s in sections if s.get("content") is None], one, config.SECTION_CONCURRENCY)
+    except llm.DeepSeekAuthenticationError as exc:
+        await update_lecture(lecture_id, {"summary_error": str(exc)})
+        raise
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
         msg = f"강의노트 작성 중 오류 ({len(errors)}개 섹션): {errors[0]}"

@@ -66,3 +66,15 @@ YOYAKU_LARGE_TEST=1 PYTHONPATH=worker python -m unittest discover -s worker/test
 GitHub Actions에서도 일반 검사를 실행합니다. 수동 실행의 `large_upload`를 켜면 대용량 테스트를 포함합니다.
 
 대용량 테스트는 **1초짜리 정상 MP4에 free 박스를 채워 정확히 1.5 GiB**로 만든 데이터를 ASGI 업로드 API로 모두 전송하고 실제 FFmpeg 변환, 오디오 트랙, 파일 정리, 이벤트 루프 응답성을 확인합니다. Supabase 저장·DB 호출은 모의 응답입니다. 따라서 실제 Railway 프록시·인터넷 전송, 실제 Supabase 저장, 장시간 영상 디코딩, fal/DeepSeek 전사·요약 품질을 보장하는 테스트는 아닙니다. 운영 환경의 키와 실제 강의를 사용한 전체 검증은 별도로 필요합니다.
+
+## DeepSeek 401 인증 오류 복구
+
+`Authentication Fails ... api key ... is invalid`는 DeepSeek가 워커의 키를 거부했다는 뜻입니다. 코드 변경만으로 폐기되거나 잘못된 키를 유효하게 만들 수는 없습니다.
+
+1. [DeepSeek Platform의 API keys](https://platform.deepseek.com/api_keys)에서 유효한 키를 새로 발급합니다.
+2. **Railway → Python 워커 서비스 → Variables → `DEEPSEEK_API_KEY`**에 키 원문만 입력합니다. 따옴표·`Bearer ` 접두사·공백을 넣지 않습니다. Vercel에만 설정하거나 다른 제공자의 키를 사용하면 연결되지 않습니다.
+3. 공식 DeepSeek 키라면 `DEEPSEEK_BASE_URL=https://api.deepseek.com`, `DEEPSEEK_MODEL=deepseek-chat`로 설정하고 워커를 재배포합니다. 워커는 시작 시 환경변수를 읽으므로 재시작이 필요합니다.
+4. 환경변수가 주입된 워커 셸(`/srv`, 로컬 소스에서는 `worker/`)에서 `python -m app.check_deepseek`를 실행합니다. 키를 출력하지 않고 `/models` 인증 결과만 확인합니다. 실제 모델의 생성 품질·잔액까지 보장하는 검사는 아닙니다.
+5. 해당 강의의 **이어서 다시 시도**를 누릅니다. 교정 단계에서 실패했다면 기존 원문·완료된 교정 구간을 유지하고 미완료 구간만 처리합니다. 영상을 다시 업로드하거나 처음부터 추출할 필요는 없습니다.
+
+교정·노트 작성의 병렬 호출 전 인증을 한 번 확인합니다. 작업 도중 401이 발생해도 대기 중인 구간은 더 호출하지 않으며, 이미 요청된 최대 동시 처리 수만큼은 응답을 기다립니다. 외부 오류 응답 본문은 키 정보가 포함될 수 있어 오류 메시지에 저장하지 않습니다. 402는 인증 오류와 별도로 잔액 부족을 안내합니다.
