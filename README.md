@@ -1,68 +1,68 @@
-# forGoonELearning — 강의노트
+# Yoyaku
 
-한국어 강의의 영상 또는 음성 파일을 올려 원문 전사, 문맥 교정 대본, 학습 노트를 만드는 개인용 웹입니다.
+강의 영상(또는 오디오)을 올리면 **대본**과 **강의노트**를 만들어 주는 웹 강의노트 플랫폼입니다.
 
-소스 저장소: https://github.com/imjw0826/forGoonELearning
+- **추출**: 영상에서 음성(mp3)을 뽑고 Whisper로 대본을 만든 뒤, DeepSeek가 오탈자와 문맥에 맞지 않는 부분을 교정합니다.
+- **요약**: 교정된 대본과 강의자료(PDF/PPTX/DOCX)를 바탕으로, 강의 순서대로 목차와 위계 구조를 갖춘 개요식 강의노트를 만듭니다.
+- **검색**: 과목 안의 모든 강의 대본에서 텍스트를 검색합니다.
+- 업로드·추출·요약 등 모든 수정 작업은 접근 코드를 입력해야 사용할 수 있습니다.
 
-이 저장소의 소스는 공개이며, 실제 웹의 접근 권한과 강의 데이터는 별도로 관리합니다.
+## 기술 스택
 
-현재 사용 중인 개인 웹: https://lecture-note-studio.jwgardden.chatgpt.site
+| 구성 | 역할 |
+|---|---|
+| Next.js (TypeScript) + Tailwind | 웹 화면과 API — Vercel |
+| Python 워커 (`worker/`, FastAPI + ffmpeg) | 음성 변환, Whisper·DeepSeek 작업 — Railway |
+| Supabase | Postgres(데이터), Storage(오디오·강의자료) |
+| fal.ai Whisper / DeepSeek | 음성 인식 / 대본 교정·강의노트 생성 |
 
-## 처리 흐름
+## 구조
 
-1. 원본을 Cloudflare R2에 분할 업로드합니다. 웹의 업로드 기준은 최대 2 GiB입니다.
-2. MP4·WebM은 보유 외부 서버의 **Python·FFmpeg 코드로 MP3를 추출**합니다. MP3·M4A·WAV는 이 단계를 건너뜁니다.
-3. 준비된 음성파일만 fal API의 Wizper(Whisper Large v3)에 보내 한국어 `ko`로 전사합니다.
-4. DeepSeek가 앞뒤 원문 문맥을 참고해 별도로 교정합니다. 원문, 교정 대본, 수정 이유를 모두 보관합니다.
-5. 교정 대본으로 구간 정리와 최종 강의노트를 생성해 Cloudflare D1에 저장합니다.
-6. 최종 노트 저장 후 사이트의 원본 파일을 삭제합니다. fal 임시 파일에는 비공개 ACL과 24시간 만료를 설정합니다.
+```
+app/, components/, lib/    웹앱 (화면, API 라우트, 브라우저 ffmpeg.wasm 변환)
+worker/                    Railway 워커 (Dockerfile)
+supabase/migrations/       DB 스키마
+```
 
-PC는 업로드와 결과 표시를 담당하고, Python·FFmpeg 변환, 음성 인식과 AI 처리는 외부 서버에서 실행합니다. fal과 DeepSeek API 키를 API 연결에서 한 번 저장하면 다음 접속부터 서버가 자동으로 사용합니다. 키는 사용자·제공자별로 AES-GCM 암호화해서 Cloudflare D1에 보관하며, 브라우저 저장소나 GitHub에는 저장하지 않습니다.
+## 실행에 필요한 환경변수
 
-## API 연결 관리
+`.env.example` 참고. 웹앱(Vercel)에는 Supabase 접속 정보, `WORKER_URL`, `WORKER_SECRET`, `SESSION_SECRET`, `ACCESS_CODE`가,
+워커(Railway)에는 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `FAL_KEY`, `DEEPSEEK_API_KEY`, `WORKER_SECRET`이 필요합니다.
 
-웹의 API 연결에서 fal과 DeepSeek 키를 입력하고, 영상 처리에는 변환 서버의 HTTPS 주소와 연결 키를 추가한 뒤 **저장하고 연결**을 누릅니다. 저장된 키는 조회 화면으로 반환하지 않으며 저장 여부만 표시합니다. 빈 입력은 기존 키를 유지하고, 새 키를 입력하면 교체합니다. 각 키를 개별 삭제할 수 있습니다. 기존 AssemblyAI 기록 처리를 위한 키도 별도로 저장할 수 있습니다.
+## 로컬 실행
 
-서버 런타임에는 32바이트 무작위 값의 64자리 16진수 `KEY_VAULT_SECRET`이 필요합니다. 이 값은 Sites 비밀 환경 변수로 관리하고 배포마다 유지해야 합니다. 일반 배포에서 교체하지 않습니다. 분실하거나 교체하면 기존 저장 키를 복호화할 수 없어 사용자가 키를 다시 등록해야 합니다. 실제 값은 소스·호스팅 매니페스트·GitHub에 넣지 않습니다.
+```bash
+npm install && npm run dev                                   # 웹앱
+cd worker && pip install -r requirements.txt && uvicorn app.main:app --port 8080   # 워커
+```
 
-## 강의 삭제와 연결 오류 확인
 
-내 강의 목록의 휴지통 버튼으로 파일·원문·교정 대본·노트를 함께 삭제할 수 있습니다. 확인 후 삭제하며 API 키는 유지합니다. 미완료 업로드를 취소하고, 현재 서버 요청이 처리 중이면 잠시 후 재시도하도록 안내합니다. 저장소 정리가 실패하면 삭제 중 기록을 남겨 다시 삭제할 수 있습니다. 진행 중인 fal 전사는 취소를 요청하지만 실행 중인 처리의 중단은 보장되지 않습니다. fal 임시 파일은 기존 만료 시점에 삭제됩니다.
+## 1.5GB 영상 업로드 및 운영 조건
 
-Whisper 연결은 Cloudflare Workers에서 지원되는 `redirect: manual`을 사용하고 예상하지 못한 주소 이동을 차단합니다. 기존 `redirect: error`는 이 런타임에서 요청 전 예외를 발생시켰습니다. 오류에는 실패 단계와 HTTP 상태를 표시하며, 전사 요청 번호가 있으면 fal에서 확인할 수 있도록 표시합니다. 키·서명 URL·외부 응답 본문은 오류 기록에 남기지 않습니다.
+- 원본은 **최대 2 GiB**입니다. 512 MiB 이상이면 서버 변환을 기본 선택하며, 1.5GB 영상도 이 방식을 권장합니다. 브라우저 변환은 선택할 수 있지만 기기 메모리·코덱에 따라 실패할 수 있습니다.
+- 브라우저가 원본을 **8 MiB씩 Railway에 직접 전송**합니다. Vercel의 요청 본문으로 영상을 보내지 않습니다. 1.5 GiB는 192개 조각이며 실패한 조각은 최대 3회 재시도합니다. 탭은 업로드 완료까지 열어 두세요. 새로고침 후 업로드를 이어받는 기능은 아직 없습니다.
+- 서버는 크기·조각 수·누락을 검사하고 디스크에서 스트리밍으로 합칩니다. 합치는 동안 다른 요청도 처리합니다. 같은 강의의 쓰기를 직렬화하고 변환 중 원본 변경을 차단합니다.
+- 웹과 워커를 **같은 버전으로 함께 배포**해야 합니다. 이전의 48 MiB 조각과 새 완료 요청(`bytes` 필수)은 호환되지 않습니다. 진행 중인 업로드가 끝난 후 교체하고 열려 있던 웹 탭을 새로고침하세요.
+- Railway는 **단일 인스턴스·단일 Uvicorn 프로세스**로 실행하고 `/data`에 저장 공간을 연결하세요. 작업 잠금은 프로세스 내부에 있으므로 복제 인스턴스나 `--workers > 1`은 지원하지 않습니다. 1.5 GiB 영상 한 개 처리 시 최소 3 GiB의 여유 디스크를 권장하며 동시 업로드 수만큼 용량을 확보하세요. 중도 포기한 업로드 조각은 자동 만료되지 않으므로 사용 중이 아닌 업로드 폴더를 운영자가 정리해야 합니다.
+- `WORKER_URL`은 브라우저에서 접근 가능한 HTTPS 주소, `ALLOWED_ORIGINS`는 실제 웹 주소로 설정합니다. 앞단 프록시는 8 MiB 요청과 느린 업로드를 허용해야 합니다. 웹·워커의 `WORKER_SECRET` 값은 같아야 합니다.
+- 변환 시간 제한은 2시간입니다. 변환 결과는 16kHz 모노 32kbps MP3이며 **45 MiB 이하**만 저장합니다(대략 3시간대 강의). 원본 용량보다 영상 길이가 MP3 크기를 결정합니다. 한도를 넘는 긴 강의는 나눠 올리세요. Supabase 프로젝트·`audio` 버킷의 파일 제한도 이 크기를 허용해야 합니다.
+- 재시작으로 변환이 중단되면 원본을 다시 업로드해야 합니다. 저장된 대본 교정·요약 단계는 기존 재개 경로를 사용하며, 백그라운드 API 오류도 화면에 표시할 수 있도록 저장합니다.
 
-## Python 변환 서버와 중단 버튼
+## 회귀 검증
 
-변환은 별도의 유료 변환 API 없이 Python 표준 라이브러리와 FFmpeg 코드로 실행합니다. [서버 설치 안내](services/audio-converter/README.md), [Python 코드](services/audio-converter/server.py), Docker/Compose 파일이 포함되어 있습니다. 현재 Sites의 Cloudflare Worker는 FFmpeg를 실행할 수 없으므로 보유 서버에 이 서비스를 배포하고 HTTPS 주소와 `CONVERTER_TOKEN`을 등록해야 합니다. **서버가 연결되기 전에는 영상 전사를 시작하지 않습니다.** 서버 실행 비용 및 fal/DeepSeek 이용료는 별도입니다.
+Node.js 22.13 이상, Python 3.12 및 FFmpeg가 필요합니다.
 
-작업 ID를 저장한 뒤 멱등 요청으로 변환을 접수하고 완료된 MP3만 Whisper에 전달합니다. 실패 시 영상을 그대로 Whisper에 보내는 대체 경로는 없습니다. MP3는 서명된 임시 URL로 제공하고, 노트 저장·강의 삭제 후 서버 파일 삭제를 요청합니다. 자동 만료는 24시간입니다. 원본은 노트 저장까지 보관합니다.
+```bash
+npm ci
+npm run test:upload
+npm run typecheck
+npm run build -- --webpack
+pip install -r worker/requirements.txt
+PYTHONPATH=worker python -m unittest discover -s worker/tests -v
+# 디스크에 약 1.5 GiB를 실제로 쓰는 대용량 테스트
+YOYAKU_LARGE_TEST=1 PYTHONPATH=worker python -m unittest discover -s worker/tests -v
+```
 
-진행 표시의 작은 **중단** 버튼은 업로드·폴링·후속 AI 처리를 중단하고 서버에 중단 상태를 저장합니다. 진행 중인 Python 변환에는 취소·삭제를 요청하며 저장된 원본에서 다시 시작할 수 있습니다. 이미 실행 중인 fal/DeepSeek 요청은 완료되거나 과금될 수 있습니다. 저장된 결과는 재개 시 재사용합니다. 왼쪽 강의 목록은 너비를 늘리고 항목 높이를 줄였으며 부가 문구를 삭제했습니다.
+GitHub Actions에서도 일반 검사를 실행합니다. 수동 실행의 `large_upload`를 켜면 대용량 테스트를 포함합니다.
 
-## GitHub 저장소와 웹 호스팅
-
-이 저장소는 현재 운영 중인 Sites 웹의 소스 보관본입니다. GitHub에 올리는 것만으로 새로운 웹 서버가 실행되거나 현재 웹이 자동 갱신되지는 않습니다. GitHub Pages는 정적 웹 호스팅이므로 이 프로젝트의 업로드 API, D1/R2 저장소, 서버 측 API 연결을 단독으로 실행할 수 없습니다.
-
-현재 배포는 Cloudflare Workers 기반의 ChatGPT Sites에서 실행되며 개인 접근 권한을 유지합니다. 소스의 `.openai/hosting.json`은 현재 Sites 프로젝트와 DB/BUCKET 바인딩을 나타냅니다. GitHub 저장소의 공개 여부와 실제 웹사이트의 접근 권한은 별개입니다.
-
-다른 호스팅으로 이전하려면 서버 런타임, D1/R2 또는 대체 저장소, 대용량 업로드, 로그인과 소유자 검증을 별도로 연결해야 합니다. 현재 `oai-authenticated-user-id` 헤더는 Sites 게이트웨이가 검증해서 전달합니다. 독립 배포에서 이 헤더를 외부 클라이언트가 직접 설정하도록 허용해서는 안 됩니다.
-
-## 개발
-
-- Node.js 22.13 이상
-- pnpm: `package.json`의 packageManager 버전
-- 설치: `pnpm install --frozen-lockfile`
-- 타입 확인: `pnpm exec tsc --noEmit`
-- 통합 검증: `pnpm test:integration` (실제 로컬 Workers/D1/R2 + 외부 API 모의 응답)
-- DB 스키마: `db/schema.ts`, 순차 마이그레이션: `drizzle/`
-- 앱: `app/`, 서버 API: `app/api/lectures/`, 외부 API 어댑터: `lib/`
-
-기존 AssemblyAI로 생성한 강의의 기록을 유지하기 위한 호환 코드가 포함되어 있습니다. 새 업로드는 fal의 Whisper API를 사용합니다.
-
-## 검증 범위
-
-이 소스 버전은 타입 검사, 빌드, 실제 로컬 D1/R2와 외부 API 응답 모의 테스트를 통과했습니다. 작은 합성 MP4로 실제 FFmpeg 변환을 실행해 영상 트랙이 없는 MP3 생성, 서명 다운로드, 변환 취소·삭제도 확인했습니다. 변환 실패 시 전사 차단, 음성 업로드의 변환 생략, 중단·재개도 검증했습니다. 분할 업로드, 한국어 고정, 교정 전후 보관, 실패 후 재시도, 노트 저장 후 원본 삭제를 확인했습니다. API 키 저장·교체·삭제, 계정별 분리, 암호화 변조 차단, 클라이언트에서 키를 보내지 않는 자동 사용도 검증했습니다. Workers의 실제 Request 구현으로 요청 옵션을 검증하며, 강의 삭제·미완료 업로드 취소·소유자 분리·취소 요청·삭제 실패 후 재시도도 확인했습니다. 실제 API 키를 사용한 한국어 인식 품질과 실제 1.5 GiB 강의의 전체 처리는 아직 실측하지 않았습니다. AI 교정도 틀릴 수 있으므로 중요한 내용은 보관된 원문과 대조하세요.
-
-## 데이터 관리
-
-저장소에 강의 영상, 대본, 생성 노트, 사용자 데이터베이스, API 키, 런타임 상태, 설치된 의존성, 빌드 산출물을 올리지 않습니다. 강의 파일과 생성된 결과는 현재 개인 웹의 사용자별 저장소에 보관합니다.
+대용량 테스트는 **1초짜리 정상 MP4에 free 박스를 채워 정확히 1.5 GiB**로 만든 데이터를 ASGI 업로드 API로 모두 전송하고 실제 FFmpeg 변환, 오디오 트랙, 파일 정리, 이벤트 루프 응답성을 확인합니다. Supabase 저장·DB 호출은 모의 응답입니다. 따라서 실제 Railway 프록시·인터넷 전송, 실제 Supabase 저장, 장시간 영상 디코딩, fal/DeepSeek 전사·요약 품질을 보장하는 테스트는 아닙니다. 운영 환경의 키와 실제 강의를 사용한 전체 검증은 별도로 필요합니다.
