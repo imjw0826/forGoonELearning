@@ -482,7 +482,8 @@ function MaterialsPanel({ lectureId, materials, disabled }: { lectureId: string;
 
   return (
     <section className="rounded-2xl border border-zinc-200 p-4">
-      <h2 className="mb-3 text-sm font-semibold text-zinc-700">강의자료</h2>
+      <h2 className="mb-2 text-sm font-semibold text-zinc-700">강의자료</h2>
+      <p className="mb-3 text-xs text-zinc-500">스캔 PDF의 글자도 추출·요약 시 자동으로 읽습니다. 처음에는 분석 시간이 더 걸릴 수 있어요.</p>
       {materials.length === 0 && !uploading && <p className="text-sm text-zinc-400">업로드된 자료가 없어요.</p>}
       <ul className="space-y-1">
         {materials.map((m) => (
@@ -492,7 +493,7 @@ function MaterialsPanel({ lectureId, materials, disabled }: { lectureId: string;
               <span className="block truncate">{m.filename}</span>
               <span className="block text-xs text-zinc-400">
                 {m.size ? formatBytes(m.size) : ""}
-                {m.chars ? ` · 텍스트 ${m.chars.toLocaleString()}자` : " · 텍스트 없음"}
+                {m.chars ? ` · 텍스트 ${m.chars.toLocaleString()}자` : m.filename.toLowerCase().endsWith(".pdf") ? " · 추출·요약 시 자동 OCR" : " · 텍스트 없음"}
               </span>
             </span>
             {m.url && (
