@@ -1,49 +1,363 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens (shadcn/ui-style semantic colours, light + dark)
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.9);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.9);
+  --primary: oklch(0.21 0.006 285.9);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.4);
+  --secondary-foreground: oklch(0.21 0.006 285.9);
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.016 285.9);
+  --accent: oklch(0.967 0.001 286.4);
+  --accent-foreground: oklch(0.21 0.006 285.9);
+  --brand: oklch(0.546 0.215 262.9);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-soft: oklch(0.962 0.024 264.5);
+  --success: oklch(0.596 0.145 163.2);
+  --success-soft: oklch(0.962 0.044 156.7);
+  --warning: oklch(0.666 0.157 58.3);
+  --warning-soft: oklch(0.973 0.071 103.2);
+  --destructive: oklch(0.577 0.245 27.3);
+  --destructive-soft: oklch(0.971 0.013 17.4);
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.92 0.004 286.3);
+  --ring: oklch(0.705 0.015 286.1);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.92 0.004 286.3);
+  --highlight: oklch(0.924 0.12 95.7);
+  --radius: 0.625rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.141 0.005 285.8);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.175 0.006 285.9);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.21 0.006 285.9);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.92 0.004 286.3);
+    --primary-foreground: oklch(0.21 0.006 285.9);
+    --secondary: oklch(0.274 0.006 286);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.274 0.006 286);
+    --muted-foreground: oklch(0.705 0.015 286.1);
+    --accent: oklch(0.274 0.006 286);
+    --accent-foreground: oklch(0.985 0 0);
+    --brand: oklch(0.673 0.182 264);
+    --brand-soft: oklch(0.282 0.087 267.9);
+    --success: oklch(0.723 0.15 159.4);
+    --success-soft: oklch(0.262 0.051 172.6);
+    --warning: oklch(0.795 0.162 78.6);
+    --warning-soft: oklch(0.286 0.066 53.8);
+    --destructive: oklch(0.704 0.191 22.2);
+    --destructive-soft: oklch(0.258 0.092 26);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.552 0.016 285.9);
+    --sidebar: oklch(0.175 0.006 285.9);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --highlight: oklch(0.476 0.103 61.9);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-highlight: var(--highlight);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Typography
+   Pretendard for Korean + Latin; tracking tightens as size grows, loosens for
+   small labels; reading text gets generous leading and keeps Korean words whole.
+   ────────────────────────────────────────────────────────────────────────── */
+
 @theme {
-  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", sans-serif;
-  --color-brand-50: #eef2ff;
-  --color-brand-100: #e0e7ff;
-  --color-brand-500: #6366f1;
-  --color-brand-600: #4f46e5;
-  --color-brand-700: #4338ca;
+  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    "Noto Sans KR", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-2xs--letter-spacing: 0.01em;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-xs--letter-spacing: 0;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.375rem;
+  --text-sm--letter-spacing: -0.006em;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.6rem;
+  --text-base--letter-spacing: -0.01em;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.6rem;
+  --text-lg--letter-spacing: -0.014em;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-xl--letter-spacing: -0.02em;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-2xl--letter-spacing: -0.024em;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.375rem;
+  --text-3xl--letter-spacing: -0.028em;
+
+  /* Motion: strong ease-out for entrances, short durations, no bounce. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --animate-enter: enter 0.32s var(--ease-out) both;
+  --animate-fade-in: fade-in 0.2s var(--ease-out) both;
+  --animate-pop-in: pop-in 0.18s var(--ease-out) both;
+  --animate-pop-out: pop-out 0.12s ease-in both;
+  --animate-overlay-in: fade-in 0.2s var(--ease-out) both;
+  --animate-overlay-out: fade-out 0.15s ease-in both;
+  --animate-indeterminate: indeterminate 1.4s var(--ease-in-out) infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
 }
 
-html,
-body {
-  height: 100%;
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
-
-body {
-  @apply bg-white text-zinc-900 antialiased;
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
 }
-
-mark {
-  @apply rounded-sm bg-amber-200/80 px-0.5 text-inherit;
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
 }
-
-/* Lecture note typography tweaks */
-.note-body h2 {
-  scroll-margin-top: 1rem;
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(2px);
+  }
 }
-.note-body h3 {
-  scroll-margin-top: 1rem;
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
-.note-body ul ul {
-  margin-top: 0.15em;
-  margin-bottom: 0.15em;
-}
-.note-body li {
-  margin-top: 0.15em;
-  margin-bottom: 0.15em;
-}
-
-@keyframes yoyaku-slide {
+@keyframes indeterminate {
   0% {
     transform: translateX(-100%);
   }
   100% {
-    transform: translateX(300%);
+    transform: translateX(250%);
   }
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-sm text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold text-balance;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--brand) 22%, transparent);
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+  mark {
+    @apply rounded-[3px] bg-highlight px-0.5 text-inherit;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+/* Staggered entrance for lists: set --i on each item. */
+@utility stagger {
+  animation: var(--animate-enter);
+  animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+}
+
+/* Long-form reading (transcript, lecture notes). */
+@utility reading {
+  font-size: 0.96875rem;
+  line-height: 1.85;
+  letter-spacing: -0.004em;
+}
+
+/* Lecture note typography */
+.note-body {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-links: var(--brand);
+  --tw-prose-bullets: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+  --tw-prose-code: var(--foreground);
+  font-size: 0.96875rem;
+  line-height: 1.8;
+  letter-spacing: -0.004em;
+}
+.note-body h1 {
+  font-size: 1.75rem;
+  line-height: 2.25rem;
+  letter-spacing: -0.028em;
+  font-weight: 700;
+}
+.note-body h2 {
+  scroll-margin-top: 1.5rem;
+  font-size: 1.25rem;
+  letter-spacing: -0.022em;
+  font-weight: 650;
+}
+.note-body h3 {
+  scroll-margin-top: 1.5rem;
+  font-size: 1.03rem;
+  letter-spacing: -0.016em;
+  font-weight: 650;
+}
+.note-body li {
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
+}
+.note-body ul ul,
+.note-body ol ul {
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
+}
+.note-body strong {
+  font-weight: 650;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes shake {
+  20% {
+    transform: translateX(-6px);
+  }
+  45% {
+    transform: translateX(5px);
+  }
+  70% {
+    transform: translateX(-3px);
+  }
+  90% {
+    transform: translateX(1px);
+  }
+}
+
+/* Audio scrubber */
+.player-range {
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--brand) var(--pct, 0%), var(--secondary) var(--pct, 0%));
+  cursor: pointer;
+  outline: none;
+}
+.player-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 2px solid var(--brand);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+  transition: transform 0.15s var(--ease-out);
+}
+.player-range:hover::-webkit-slider-thumb,
+.player-range:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+.player-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 2px solid var(--brand);
 }

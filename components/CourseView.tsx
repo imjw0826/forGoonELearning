@@ -1,13 +1,24 @@
 "use client";
 
-import { FileText, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ChevronRight, FileVideo, MoreHorizontal, Pencil, Plus, Search, SearchX, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/sonner";
 import { api } from "@/lib/client/api";
+import { formatDuration } from "@/lib/format";
 import type { Course, LectureSummary, SearchHit } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { useAccess } from "./AccessProvider";
+import { useConfirm } from "./ConfirmProvider";
 import { Highlight } from "./Highlight";
+import { CourseMark } from "./Sidebar";
 import { LectureBadges } from "./StatusBadge";
 
 export function CourseView({ course, lectures }: { course: Course; lectures: LectureSummary[] }) {
@@ -15,22 +26,29 @@ export function CourseView({ course, lectures }: { course: Course; lectures: Lec
   const { guard } = useAccess();
   const [query, setQuery] = useState("");
 
+  const totalSec = lectures.reduce((s, l) => s + Number(l.duration_sec ?? 0), 0);
+  const notes = lectures.filter((l) => l.summary_status === "done").length;
+
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-8 sm:py-8">
-      {/* Top bar: 과목 이름 | 검색 | 강의 추가 */}
-      <header className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[1fr_minmax(0,22rem)_1fr]">
+    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-8 sm:py-10">
+      {/* 과목 이름 | 검색 | 강의 추가 */}
+      <header className="grid animate-enter grid-cols-1 items-center gap-3 md:grid-cols-[1fr_minmax(0,20rem)_1fr]">
         <CourseTitle course={course} />
         <SearchBox value={query} onChange={setQuery} />
-        <div className="flex sm:justify-end">
-          <button
-            onClick={() => guard(() => router.push(`/courses/${course.id}/lectures/new`))}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700"
-          >
-            <Plus className="h-4 w-4" />
+        <div className="flex md:justify-end">
+          <Button onClick={() => guard(() => router.push(`/courses/${course.id}/lectures/new`))}>
+            <Plus />
             강의 추가
-          </button>
+          </Button>
         </div>
       </header>
+
+      {lectures.length > 0 && !query.trim() && (
+        <p className="mt-2 animate-fade-in text-xs text-muted-foreground tabular">
+          강의 {lectures.length}개{totalSec > 0 && ` · 총 ${formatDuration(totalSec)}`}
+          {notes > 0 && ` · 강의노트 ${notes}개`}
+        </p>
+      )}
 
       <section className="mt-8">
         {query.trim() ? (
@@ -46,103 +64,116 @@ export function CourseView({ course, lectures }: { course: Course; lectures: Lec
 function CourseTitle({ course }: { course: Course }) {
   const router = useRouter();
   const { guard } = useAccess();
-  const [menu, setMenu] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const confirm = useConfirm();
+  const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(course.name);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => setName(course.name), [course.name]);
-  useEffect(() => {
-    if (!menu) return;
-    const close = (e: MouseEvent) => !menuRef.current?.contains(e.target as Node) && setMenu(false);
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [menu]);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || name.trim() === course.name) return setEditing(false);
+    if (!name.trim() || name.trim() === course.name) return setRenaming(false);
     try {
       await api(`/api/courses/${course.id}`, { method: "PATCH", body: { name } });
-      setEditing(false);
+      setRenaming(false);
       router.refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : String(err));
     }
   };
 
   const remove = async () => {
-    if (!confirm(`'${course.name}' 과목과 모든 강의·대본·노트를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    const ok = await confirm({
+      title: `‘${course.name}’ 과목을 삭제할까요?`,
+      description: "모든 강의와 영상, 대본, 강의노트가 함께 삭제되고 되돌릴 수 없어요.",
+      confirmLabel: "과목 삭제",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await api(`/api/courses/${course.id}`, { method: "DELETE" });
       router.push("/");
       router.refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : String(err));
     }
   };
 
-  if (editing) {
-    return (
-      <form onSubmit={save} className="flex items-center gap-2">
-        <input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={save}
-          onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
-          className="min-w-0 flex-1 rounded-md border border-zinc-300 px-2 py-1 text-xl font-bold outline-none focus:border-brand-500"
-        />
-      </form>
-    );
-  }
-
   return (
-    <div className="relative flex min-w-0 items-center gap-1" ref={menuRef}>
-      <h1 className="truncate text-2xl font-bold tracking-tight">{course.name}</h1>
-      <button onClick={() => setMenu((v) => !v)} className="rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700" aria-label="과목 메뉴">
-        <MoreHorizontal className="h-5 w-5" />
-      </button>
-      {menu && (
-        <div className="absolute top-full left-0 z-20 mt-1 w-40 rounded-lg bg-white py-1 text-sm shadow-lg ring-1 ring-zinc-200">
-          <button
-            onClick={() => {
-              setMenu(false);
-              guard(() => setEditing(true));
-            }}
-            className="flex w-full items-center gap-2 px-3 py-2 hover:bg-zinc-50"
-          >
-            <Pencil className="h-4 w-4 text-zinc-400" /> 이름 변경
-          </button>
-          <button
-            onClick={() => {
-              setMenu(false);
-              guard(remove);
-            }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-red-600 hover:bg-red-50"
-          >
-            <Trash2 className="h-4 w-4" /> 과목 삭제
-          </button>
-        </div>
-      )}
+    <div className="flex min-w-0 items-center gap-2.5">
+      <CourseMark course={course} className="size-8 rounded-lg text-sm" />
+      <h1 className="truncate text-2xl">{course.name}</h1>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="과목 메뉴">
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => guard(() => (setName(course.name), setRenaming(true)))}>
+            <Pencil /> 이름 변경
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => guard(remove)}>
+            <Trash2 /> 과목 삭제
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Dialog open={renaming} onOpenChange={setRenaming}>
+        <DialogContent className="max-w-sm">
+          <form onSubmit={save}>
+            <DialogTitle>과목 이름 변경</DialogTitle>
+            <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} className="mt-4" />
+            <div className="mt-5 flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setRenaming(false)}>
+                취소
+              </Button>
+              <Button type="submit">저장</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+
+  // "/" focuses search, like most docs sites.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (e.key === "/" && !["INPUT", "TEXTAREA"].includes(t.tagName) && !t.isContentEditable) {
+        e.preventDefault();
+        ref.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <label className="relative block">
-      <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-      <input
+      <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        ref={ref}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && onChange("")}
         placeholder="강의 대본에서 검색"
-        className="w-full rounded-lg border border-zinc-200 bg-zinc-50 py-2 pr-8 pl-9 text-sm outline-none focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-100"
+        className="bg-muted/60 pr-9 pl-9 shadow-none focus-visible:bg-background"
       />
-      {value && (
-        <button onClick={() => onChange("")} className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:text-zinc-700" aria-label="검색어 지우기">
-          <X className="h-4 w-4" />
+      {value ? (
+        <button
+          onClick={() => onChange("")}
+          className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          aria-label="검색어 지우기"
+        >
+          <X className="size-4" />
         </button>
+      ) : (
+        <kbd className="pointer-events-none absolute top-1/2 right-2.5 hidden -translate-y-1/2 rounded border bg-background px-1.5 font-mono text-[10px] text-muted-foreground sm:block">
+          /
+        </kbd>
       )}
     </label>
   );
@@ -151,35 +182,56 @@ function SearchBox({ value, onChange }: { value: string; onChange: (v: string) =
 function LectureList({ courseId, lectures }: { courseId: string; lectures: LectureSummary[] }) {
   if (lectures.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-zinc-300 px-6 py-16 text-center">
-        <FileText className="mx-auto h-8 w-8 text-zinc-300" />
-        <p className="mt-3 text-sm font-medium text-zinc-700">아직 강의가 없어요</p>
-        <p className="mt-1 text-sm text-zinc-500">오른쪽 위 ‘강의 추가’로 강의 영상이나 오디오를 올려보세요.</p>
+      <div className="flex animate-enter flex-col items-center rounded-xl border border-dashed px-6 py-16 text-center">
+        <div className="flex size-11 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <FileVideo className="size-5" />
+        </div>
+        <p className="mt-4 text-sm font-medium">아직 강의가 없어요</p>
+        <p className="mt-1 text-sm text-muted-foreground">오른쪽 위 ‘강의 추가’로 강의 영상을 올려보세요. 여러 개를 한 번에 올릴 수 있어요.</p>
       </div>
     );
   }
   return (
-    <>
-      <h2 className="mb-3 text-sm font-semibold text-zinc-500">강의 목록 · {lectures.length}개</h2>
-      <ul className="divide-y divide-zinc-100 overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-        {lectures.map((l) => (
-          <li key={l.id}>
-            <Link href={`/courses/${courseId}/lectures/${l.id}`} className="flex items-center gap-4 px-4 py-4 hover:bg-zinc-50 sm:px-5">
-              <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-                <span className="text-base leading-none font-bold">{l.session_no}</span>
-                <span className="mt-0.5 text-[10px] leading-none">회차</span>
+    <Card className="overflow-hidden">
+      <ul className="divide-y">
+        {lectures.map((l, i) => (
+          <li key={l.id} className="stagger" style={{ "--i": i } as React.CSSProperties}>
+            <Link
+              href={`/courses/${courseId}/lectures/${l.id}`}
+              className="group flex items-center gap-3 px-3 py-3.5 sm:gap-4 transition-colors duration-150 hover:bg-muted/50 sm:px-5"
+            >
+              <span className="w-10 shrink-0 text-center sm:w-12">
+                <span className="block text-lg leading-6 font-semibold tracking-[-0.03em] tabular">{l.session_no}</span>
+                <span className="block text-2xs text-muted-foreground">회차</span>
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{l.title}</span>
-                <span className="mt-0.5 block text-xs text-zinc-400">{new Date(l.created_at).toLocaleDateString("ko-KR")}</span>
+                <span className="block truncate text-[15px] font-medium tracking-[-0.012em]">{l.title}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs whitespace-nowrap text-muted-foreground tabular">
+                  {Number(l.duration_sec) > 0 && <span>{formatDuration(Number(l.duration_sec))}</span>}
+                  {l.mediaCount > 1 && (
+                    <>
+                      <Dot />
+                      <span>영상 {l.mediaCount}개</span>
+                    </>
+                  )}
+                  <span className="hidden items-center gap-x-1.5 sm:inline-flex">
+                    {(Number(l.duration_sec) > 0 || l.mediaCount > 1) && <Dot />}
+                    {new Date(l.created_at).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}
+                  </span>
+                </span>
               </span>
-              <LectureBadges hasAudio={!!l.audio_path} extract={l.extract_status} summary={l.summary_status} />
+              <LectureBadges hasAudio={l.mediaCount > 0} busy={l.mediaBusy} extract={l.extract_status} summary={l.summary_status} />
+              <ChevronRight className="hidden size-4 shrink-0 text-muted-foreground/50 sm:block transition-transform duration-200 ease-[var(--ease-out)] group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
             </Link>
           </li>
         ))}
       </ul>
-    </>
+    </Card>
   );
+}
+
+function Dot() {
+  return <span aria-hidden className="size-0.5 rounded-full bg-current opacity-60" />;
 }
 
 function SearchResults({ courseId, query }: { courseId: string; query: string }) {
@@ -188,45 +240,63 @@ function SearchResults({ courseId, query }: { courseId: string; query: string })
 
   useEffect(() => {
     let cancelled = false;
-    setHits(null);
     setError(null);
     const t = setTimeout(async () => {
+      setHits(null);
       try {
         const res = await api<{ hits: SearchHit[] }>(`/api/courses/${courseId}/search?q=${encodeURIComponent(query)}`);
         if (!cancelled) setHits(res.hits);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
-    }, 250);
+    }, 220);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
   }, [courseId, query]);
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (!hits) return <p className="text-sm text-zinc-400">검색 중…</p>;
-  if (hits.length === 0) return <p className="text-sm text-zinc-500">‘{query}’이(가) 나오는 강의 대본이 없어요.</p>;
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!hits) {
+    return (
+      <div className="space-y-2">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-[76px] rounded-xl" />
+        ))}
+      </div>
+    );
+  }
+  if (hits.length === 0) {
+    return (
+      <div className="flex animate-enter flex-col items-center py-14 text-center">
+        <SearchX className="size-6 text-muted-foreground" />
+        <p className="mt-3 text-sm text-muted-foreground">‘{query}’이(가) 나오는 대본이 없어요.</p>
+      </div>
+    );
+  }
 
   return (
     <>
-      <h2 className="mb-3 text-sm font-semibold text-zinc-500">
-        ‘{query}’ 검색 결과 · {hits.length}개 강의
+      <h2 className="mb-3 text-xs font-medium text-muted-foreground">
+        ‘{query}’ 검색 결과 · 강의 {hits.length}개
       </h2>
       <ul className="space-y-2">
-        {hits.map((h) => (
-          <li key={h.id}>
+        {hits.map((h, i) => (
+          <li key={h.id} className="stagger" style={{ "--i": i } as React.CSSProperties}>
             <Link
               href={`/courses/${courseId}/lectures/${h.id}?q=${encodeURIComponent(query)}`}
-              className="block rounded-xl border border-zinc-200 bg-white px-5 py-4 hover:border-brand-200 hover:bg-brand-50/30"
+              className={cn(
+                "block rounded-xl border bg-card px-5 py-4 transition-[border-color,box-shadow] duration-150",
+                "hover:border-ring/50 hover:shadow-sm",
+              )}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-medium">
-                  {h.session_no}회차 · {h.title}
+                <span className="truncate text-sm font-medium">
+                  <span className="text-muted-foreground tabular">{h.session_no}회차</span> {h.title}
                 </span>
-                <span className="shrink-0 text-xs text-zinc-400">{h.match_count}회 등장</span>
+                <span className="shrink-0 text-xs text-muted-foreground tabular">{h.match_count}회</span>
               </div>
-              <p className="mt-1.5 line-clamp-2 text-sm text-zinc-600">
+              <p className="mt-1.5 line-clamp-2 text-[13px] leading-6 text-muted-foreground">
                 …<Highlight text={h.snippet} query={query} />…
               </p>
             </Link>

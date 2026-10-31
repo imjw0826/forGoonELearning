@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from app import config, main, media, supa
 
-ID = '12345678-1234-4123-8123-123456789abc'
+ID = '12345678-1234-4123-8123-123456789abc'  # media id
+LECTURE = '87654321-4321-4321-8321-cba987654321'
 
 
 class UploadTests(unittest.IsolatedAsyncioTestCase):
@@ -23,7 +24,11 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         self.patches = [patch.object(config, 'UPLOAD_DIR', Path(self.tmp.name)),
                         patch.object(config, 'WORKER_SECRET', 'test-secret'),
                         patch.object(supa, 'update', new_callable=AsyncMock),
-                        patch.object(supa, 'upload_file', new_callable=AsyncMock)]
+                        patch.object(supa, 'upload_file', new_callable=AsyncMock),
+                        patch.object(supa, 'insert', new_callable=AsyncMock),
+                        patch.object(supa, 'delete', new_callable=AsyncMock),
+                        patch.object(supa, 'select_one', new_callable=AsyncMock,
+                                     return_value={'id': ID, 'lecture_id': LECTURE})]
         for p in self.patches:
             p.start()
         exp = str(int(time.time()) + 3600)
@@ -45,7 +50,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         return await self.client.put(f'/uploads/{ID}/parts/{n}', content=content)
 
     async def complete(self, **changes):
-        return await self.client.post(f'/uploads/{ID}/complete', json={'parts': 1, 'bytes': 3, 'filename': 'test.mp4', **changes})
+        return await self.client.post(f'/uploads/{ID}/complete', json={'parts': 1, 'bytes': 3, **changes})
 
     async def test_unauthorized_and_invalid_part(self):
         self.assertEqual((await self.client.put(f'/uploads/{ID}/parts/0', headers={'x-upload-token': 'bad'}, content=b'a')).status_code, 401)
@@ -70,7 +75,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(media.part_path(ID, 0).read_bytes(), b'new')
 
     async def test_completion_validates_count_size_and_missing_parts(self):
-        for changes in [{'parts': -1}, {'parts': 1000000}, {'bytes': config.MAX_MEDIA_BYTES + 1}, {'bytes': 0}]:
+        for changes in [{'parts': -1}, {'parts': config.MAX_PARTS + 1}, {'bytes': 0}, {'bytes': -5}]:
             self.assertEqual((await self.complete(**changes)).status_code, 422)
         self.assertEqual((await self.complete()).status_code, 400)
         await self.put(0, b'xx')
@@ -100,8 +105,9 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_conversion_failure_is_visible_and_cleans_source(self):
         await self.put(0, b'not a video')
-        await media.convert(ID, 1, 'broken.mp4')
-        self.assertEqual(supa.update.call_args.args[2]['audio_status'], 'error')
+        await media.convert(ID, LECTURE, 1)
+        self.assertEqual(supa.update.call_args.args[0], 'lecture_media')
+        self.assertEqual(supa.update.call_args.args[2]['status'], 'error')
         supa.upload_file.assert_not_awaited()
         self.assertFalse(media.upload_dir(ID).exists())
 
@@ -110,6 +116,32 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(config, 'CONVERSION_TIMEOUT_SEC', 0.05):
             with self.assertRaises(TimeoutError):
                 await media._run(sys.executable, '-c', 'import time; time.sleep(30)')
+
+    async def test_init_checks_free_space_without_size_cap(self):
+        big = 50 * 1024 ** 3
+        disk = lambda free: type('Disk', (), {'free': free})()
+        with patch('app.main.shutil.disk_usage', return_value=disk(big + config.DISK_HEADROOM_BYTES + 1)):
+            self.assertEqual((await self.client.post(f'/uploads/{ID}/init', json={'bytes': big})).status_code, 200)
+        with patch('app.main.shutil.disk_usage', return_value=disk(big // 2)):
+            res = await self.client.post(f'/uploads/{ID}/init', json={'bytes': big})
+            self.assertEqual(res.status_code, 507)
+            self.assertIn('GB', res.json()['detail'])
+        self.assertEqual((await self.client.post(f'/uploads/{ID}/init', json={'bytes': 0})).status_code, 422)
+
+    async def test_long_audio_is_split_into_segments_with_durations(self):
+        src = Path(self.tmp.name) / 'long.mp4'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000',
+                        '-t', '5', '-c:a', 'aac', str(src)], check=True)
+        with patch.object(config, 'SEGMENT_SECONDS', 2):
+            segments = await media.extract_segments(src, Path(self.tmp.name) / 'out')
+        self.assertEqual(len(segments), 3)
+        self.assertAlmostEqual(sum(d for _, d in segments), 5, delta=0.3)
+        total = await media.save_segments(LECTURE, ID, segments)
+        self.assertAlmostEqual(total, 5, delta=0.3)
+        self.assertEqual([c.args[1] for c in supa.upload_file.await_args_list],
+                         [f'{LECTURE}/{ID}/0.mp3', f'{LECTURE}/{ID}/1.mp3', f'{LECTURE}/{ID}/2.mp3'])
+        rows = supa.insert.await_args.args[1]
+        self.assertEqual([r['seg_idx'] for r in rows], [0, 1, 2])
 
     @unittest.skipUnless(os.environ.get('YOYAKU_LARGE_TEST') == '1', 'opt-in 1.5 GiB transfer test')
     async def test_real_1_5_gib_upload_and_ffmpeg(self):
@@ -149,7 +181,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         stop = True
         await timer
         self.assertGreater(heartbeat, before_join)
-        self.assertEqual(supa.update.call_args.args[2]['audio_status'], 'ready')
+        self.assertEqual(supa.update.call_args.args[2]['status'], 'ready')
         supa.upload_file.assert_awaited_once()
         self.assertFalse(media.upload_dir(ID).exists())
         print(f'1.5 GiB / 192 parts / real FFmpeg passed in {time.monotonic() - started:.1f}s; heartbeat={heartbeat}; process peak RSS={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss} KiB')

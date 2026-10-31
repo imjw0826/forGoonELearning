@@ -40,9 +40,9 @@ export async function startWorkerJob(kind: "extract" | "summarize", lectureId: s
   return (await res.json()) as { started: boolean };
 }
 
-/** Short-lived token that lets the browser upload video parts straight to the worker. */
-export function workerUploadGrant(lectureId: string) {
-  const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
-  const sig = createHmac("sha256", workerSecret()).update(`upload:${lectureId}:${exp}`).digest("hex");
+/** Short-lived token that lets the browser upload one file's parts straight to the worker. */
+export function workerUploadGrant(mediaId: string) {
+  const exp = Math.floor(Date.now() / 1000) + 12 * 60 * 60;
+  const sig = createHmac("sha256", workerSecret()).update(`upload:${mediaId}:${exp}`).digest("hex");
   return { workerUrl: workerUrl(), token: `${exp}.${sig}` };
 }

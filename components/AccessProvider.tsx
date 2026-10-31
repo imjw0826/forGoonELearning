@@ -1,9 +1,12 @@
 "use client";
 
-import { Lock } from "lucide-react";
+import { KeyRound } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/client/api";
+import { cn } from "@/lib/utils";
 
 interface AccessCtx {
   unlocked: boolean;
@@ -55,31 +58,25 @@ export function AccessProvider({ initialUnlocked, children }: { initialUnlocked:
   return (
     <Ctx.Provider value={{ unlocked, guard, openDialog: () => setOpen(true), lock }}>
       {children}
-      {open && (
-        <UnlockDialog
-          onClose={() => {
-            pending.current = null;
-            setOpen(false);
-          }}
-          onUnlocked={onUnlocked}
-        />
-      )}
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          if (!o) pending.current = null;
+          setOpen(o);
+        }}
+      >
+        <DialogContent className="max-w-sm">{open && <UnlockForm onUnlocked={onUnlocked} />}</DialogContent>
+      </Dialog>
     </Ctx.Provider>
   );
 }
 
-function UnlockDialog({ onClose, onUnlocked }: { onClose: () => void; onUnlocked: () => void }) {
+function UnlockForm({ onUnlocked }: { onUnlocked: () => void }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shake, setShake] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,6 +89,7 @@ function UnlockDialog({ onClose, onUnlocked }: { onClose: () => void; onUnlocked
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setCode("");
+      setShake((n) => n + 1);
       inputRef.current?.focus();
     } finally {
       setBusy(false);
@@ -99,41 +97,33 @@ function UnlockDialog({ onClose, onUnlocked }: { onClose: () => void; onUnlocked
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 p-4 backdrop-blur-sm" onClick={onClose}>
-      <form
-        onSubmit={submit}
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xs rounded-2xl bg-white p-6 shadow-xl ring-1 ring-zinc-200"
-      >
-        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-brand-50 text-brand-600">
-          <Lock className="h-5 w-5" />
-        </div>
-        <h2 className="text-base font-semibold">접근 코드 입력</h2>
-        <p className="mt-1 text-sm text-zinc-500">업로드·추출·요약 기능은 코드를 아는 사람만 사용할 수 있어요.</p>
-        <input
-          ref={inputRef}
-          type="password"
-          inputMode="numeric"
-          autoComplete="off"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          className="mt-4 w-full rounded-lg border border-zinc-300 px-3 py-2 text-center text-lg tracking-[0.5em] outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-          placeholder="••••"
-        />
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-        <div className="mt-5 flex gap-2">
-          <button type="button" onClick={onClose} className="flex-1 rounded-lg px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-100">
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !code.trim()}
-            className="flex-1 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-          >
-            {busy ? "확인 중…" : "잠금 해제"}
-          </button>
-        </div>
-      </form>
-    </div>
+    <form onSubmit={submit}>
+      <div className="mb-4 flex size-10 items-center justify-center rounded-full bg-brand-soft text-brand">
+        <KeyRound className="size-[18px]" />
+      </div>
+      <DialogTitle>접근 코드</DialogTitle>
+      <DialogDescription className="text-pretty">업로드·추출·요약은 코드를 아는 사람만 쓸 수 있어요.</DialogDescription>
+      <input
+        key={shake}
+        ref={inputRef}
+        autoFocus
+        type="password"
+        inputMode="numeric"
+        autoComplete="off"
+        aria-label="접근 코드"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        className={cn(
+          "mt-5 h-12 w-full rounded-lg border border-input bg-background text-center text-xl tracking-[0.6em] tabular shadow-xs outline-none",
+          "transition-[border-color,box-shadow] focus:border-ring focus:ring-[3px] focus:ring-ring/25",
+          shake > 0 && "animate-[shake_0.32s_var(--ease-out)]",
+        )}
+        placeholder="••••"
+      />
+      <p className={cn("mt-2 h-5 text-xs text-destructive transition-opacity", error ? "opacity-100" : "opacity-0")}>{error}</p>
+      <Button type="submit" className="mt-2 w-full" size="lg" disabled={busy || !code.trim()}>
+        {busy ? "확인 중…" : "잠금 해제"}
+      </Button>
+    </form>
   );
 }

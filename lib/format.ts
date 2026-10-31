@@ -28,3 +28,14 @@ export function slugify(text: string) {
       .replace(/[^\p{L}\p{N}\-.]/gu, "")
   );
 }
+
+/** "1시간 24분", "38분", "45초" */
+export function formatDuration(sec: number) {
+  if (!Number.isFinite(sec) || sec <= 0) return "";
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return m ? `${h}시간 ${m}분` : `${h}시간`;
+  if (m) return `${m}분`;
+  return `${s}초`;
+}

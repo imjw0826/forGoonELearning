@@ -4,7 +4,7 @@
 
 ## 동작 원리
 
-1. 영상을 업로드하면 FFmpeg로 음성을 추출합니다. 대용량 파일은 분할 업로드 후 Railway 워커에서 변환합니다.
+1. 한 강의에 영상·오디오를 여러 개 올릴 수 있고, 올린 순서대로 이어져 하나의 강의가 됩니다. 파일 크기 제한은 없습니다. FFmpeg로 음성만 추출하는데, 작은 파일은 브라우저에서, 큰 파일은 분할 업로드 후 Railway 워커에서 변환합니다. 긴 녹음은 2시간 단위 mp3로 나눠 저장합니다.
 2. fal.ai Whisper가 음성을 대본으로 변환하고, DeepSeek가 강의자료를 참고해 오탈자와 전문 용어를 교정합니다.
 3. PDF·PPTX·DOCX 등의 자료에서 텍스트를 추출합니다. 스캔 PDF는 Poppler와 Tesseract OCR로 한국어·영어·한자를 읽어 교정과 요약에 활용합니다.
 4. 교정된 대본과 자료를 바탕으로 DeepSeek가 강의 순서에 맞는 목차와 강의노트를 생성합니다. 처리 결과와 파일은 Supabase에 저장합니다.
@@ -13,7 +13,7 @@
 
 | 영역 | 기술 |
 | --- | --- |
-| 웹 화면·API | Next.js, React, TypeScript, Tailwind CSS |
+| 웹 화면·API | Next.js, React, TypeScript, Tailwind CSS, shadcn/ui 방식 컴포넌트(Radix UI) |
 | 백그라운드 처리 | Python, FastAPI, FFmpeg |
 | 음성 인식·문서 생성 | fal.ai Whisper, DeepSeek |
 | PDF 문자 인식 | Poppler, Tesseract OCR |

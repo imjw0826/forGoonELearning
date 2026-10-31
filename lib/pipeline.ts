@@ -8,7 +8,7 @@ import "server-only";
  */
 import { HttpError } from "./access";
 import { db, must } from "./supabase";
-import type { Lecture, PipelineState } from "./types";
+import type { Lecture, MediaItem, PipelineState } from "./types";
 
 export async function getLecture(id: string): Promise<Lecture> {
   const { data, error } = await db().from("lectures").select("*").eq("id", id).maybeSingle();
@@ -37,14 +37,25 @@ export function isJobActive(l: Pick<Lecture, "extract_status" | "summary_status"
   );
 }
 
+export const MEDIA_COLUMNS = "id, idx, filename, size_bytes, status, error, duration_sec";
+
+export async function listMedia(lectureId: string): Promise<MediaItem[]> {
+  return must(
+    await db().from("lecture_media").select(MEDIA_COLUMNS).eq("lecture_id", lectureId).order("idx"),
+  ) as MediaItem[];
+}
+
+export function isMediaBusy(m: Pick<MediaItem, "status">) {
+  return m.status === "pending" || m.status === "uploading" || m.status === "converting";
+}
+
 export async function peekState(id: string): Promise<PipelineState> {
-  const l = await getLecture(id);
+  const [l, media] = await Promise.all([getLecture(id), listMedia(id)]);
   let p: PipelineState["progress"] = null;
   if (l.extract_status === "correcting") p = await progress("transcript_chunks", "corrected_text", id);
   else if (l.summary_status === "writing") p = await progress("note_sections", "content", id);
   return {
-    audio_status: l.audio_status,
-    audio_error: l.audio_error,
+    media,
     extract_status: l.extract_status,
     extract_error: l.extract_error,
     summary_status: l.summary_status,

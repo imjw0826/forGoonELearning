@@ -2,29 +2,24 @@
 /**
  * Browser-side audio extraction with ffmpeg.wasm.
  *
- * A 1–2GB lecture video never leaves the user's machine: the file is mounted read-only via
- * WORKERFS (no copy into wasm memory), only the audio track is decoded, and a small
- * 16kHz mono 32kbps MP3 (~15MB per hour) is produced for upload and Whisper.
+ * The video never leaves the user's machine: the file is mounted read-only via WORKERFS (read
+ * lazily from disk, so file size is not limited by memory), only the audio track is decoded, and
+ * 16kHz mono 32kbps MP3 (~15MB per hour) is produced in ≤2-hour segments so each upload stays
+ * under Supabase's per-object limit.
  *
  * The ffmpeg.wasm worker + core are served from /public/ffmpeg (see scripts/copy-ffmpeg.mjs)
  * and imported at runtime so the bundler never touches them.
  */
 import type * as FFmpegModule from "@ffmpeg/ffmpeg";
+import { SEGMENT_SECONDS } from "../upload-limits";
 
 const VIDEO_EXT = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv", "flv", "ts", "mts"];
-/** Supabase free plan caps a single object at 50MB. */
-const MAX_DIRECT_MP3 = 45 * 1024 * 1024;
+const MAX_SEGMENT_BYTES = 45 * 1024 * 1024;
+const BITRATE = 32_000;
 
 export function isVideo(file: File) {
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
   return file.type.startsWith("video/") || VIDEO_EXT.includes(ext);
-}
-
-/** Small MP3s can be uploaded as-is; everything else is converted. */
-export function needsConversion(file: File) {
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  const isMp3 = file.type === "audio/mpeg" || ext === "mp3";
-  return !(isMp3 && file.size <= MAX_DIRECT_MP3);
 }
 
 export interface ConvertProgress {
@@ -33,6 +28,11 @@ export interface ConvertProgress {
   /** seconds of media processed */
   seconds: number;
   duration: number | null;
+}
+
+export interface AudioSegment {
+  file: File;
+  duration: number;
 }
 
 function hms(h: string, m: string, s: string) {
@@ -44,7 +44,7 @@ async function loadModule(): Promise<typeof FFmpegModule> {
   return import(/* webpackIgnore: true */ /* turbopackIgnore: true */ url);
 }
 
-export async function extractMp3(file: File, onProgress: (p: ConvertProgress) => void): Promise<File> {
+export async function extractSegments(file: File, onProgress: (p: ConvertProgress) => void): Promise<AudioSegment[]> {
   const { FFmpeg, FFFSType } = await loadModule();
   const ffmpeg = new FFmpeg();
   let duration: number | null = null;
@@ -77,6 +77,7 @@ export async function extractMp3(file: File, onProgress: (p: ConvertProgress) =>
     const dir = "/in";
     await ffmpeg.createDir(dir);
     await ffmpeg.mount(FFFSType.WORKERFS, { files: [input] }, dir);
+    await ffmpeg.createDir("/out");
     const code = await ffmpeg.exec([
       "-hide_banner",
       "-i", `${dir}/${input.name}`,
@@ -86,20 +87,41 @@ export async function extractMp3(file: File, onProgress: (p: ConvertProgress) =>
       "-ar", "16000",
       "-c:a", "libmp3lame",
       "-b:a", "32k",
-      "/out.mp3",
-    ]);
+      "-f", "segment",
+      "-segment_time", String(SEGMENT_SECONDS),
+      "-reset_timestamps", "1",
+      "/out/seg-%04d.mp3",
+    ]); // prettier-ignore
     if (code !== 0) {
       const hint = tail.filter((l) => /error|invalid|matches no streams/i.test(l)).slice(-2).join(" / ");
       throw new Error(`오디오 추출에 실패했습니다${hint ? `: ${hint}` : ". 오디오 트랙이 있는 파일인지 확인해주세요."}`);
     }
-    const data = (await ffmpeg.readFile("/out.mp3")) as Uint8Array;
-    if (!data.byteLength || data.byteLength > MAX_DIRECT_MP3) {
-      throw new Error("변환된 오디오가 45 MiB를 초과하거나 비어 있습니다. 강의를 짧게 나눠 올려주세요.");
+
+    const names = (await ffmpeg.listDir("/out"))
+      .map((n) => n.name)
+      .filter((n) => /^seg-\d+\.mp3$/.test(n))
+      .sort();
+    const segments: AudioSegment[] = [];
+    for (const [i, name] of names.entries()) {
+      const data = (await ffmpeg.readFile(`/out/${name}`)) as Uint8Array;
+      await ffmpeg.deleteFile(`/out/${name}`);
+      if (!data.byteLength) continue;
+      if (data.byteLength > MAX_SEGMENT_BYTES) throw new Error("변환된 오디오 조각이 45 MiB를 넘습니다.");
+      // Segments are cut every SEGMENT_SECONDS; the last one holds the remainder. Constant
+      // bitrate gives a close estimate if ffmpeg did not report the input duration.
+      const estimated = (data.byteLength * 8) / BITRATE;
+      const isLast = i === names.length - 1;
+      const seconds =
+        duration != null ? (isLast ? Math.max(0, duration - i * SEGMENT_SECONDS) : SEGMENT_SECONDS) : estimated;
+      segments.push({
+        file: new File([data.slice().buffer as ArrayBuffer], `${i}.mp3`, { type: "audio/mpeg" }),
+        duration: seconds,
+      });
     }
+    if (!segments.length) throw new Error("변환된 오디오가 비어 있습니다. 오디오 트랙이 있는 파일인지 확인해주세요.");
     onProgress({ seconds: duration ?? 0, duration, ratio: 1 });
-    return new File([data.slice().buffer as ArrayBuffer], "audio.mp3", { type: "audio/mpeg" });
+    return segments;
   } finally {
     ffmpeg.terminate();
   }
 }
-

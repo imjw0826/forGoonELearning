@@ -60,22 +60,48 @@ def lecture_title(lecture: dict[str, Any]) -> str:
 # ------------------------------------------------------------------ 추출
 
 
+async def ordered_segments(lecture_id: str) -> list[dict[str, Any]]:
+    """All audio segments of a lecture in playback order, each with its start offset in the lecture."""
+    files = await supa.select("lecture_media", {"select": "id,idx", "lecture_id": f"eq.{lecture_id}", "status": "eq.ready"})
+    order = {f["id"]: f["idx"] for f in files}
+    segments = await supa.select("audio_segments", {"select": "*", "lecture_id": f"eq.{lecture_id}"})
+    segments = [s for s in segments if s["media_id"] in order]
+    segments.sort(key=lambda s: (order[s["media_id"]], s["seg_idx"]))
+    offset = 0.0
+    for seg in segments:
+        seg["offset_sec"] = offset
+        offset += float(seg.get("duration_sec") or 0)
+    return segments
+
+
+def _shift(value: Any, offset: float) -> float | None:
+    return None if value is None else float(value) + offset
+
+
 async def start_extract(lecture_id: str) -> None:
-    """Submits a fresh Whisper job and resets transcript state."""
-    lecture = await get_lecture(lecture_id)
-    if not lecture.get("audio_path"):
+    """Submits one Whisper job per audio segment and resets transcript state."""
+    segments = await ordered_segments(lecture_id)
+    if not segments:
         raise JobError("오디오가 아직 업로드되지 않았습니다.")
-    url = await supa.signed_url(config.AUDIO_BUCKET, lecture["audio_path"], 60 * 60 * 24)
-    job = await fal.submit(url)
+    jobs = []
+    for seg in segments:
+        url = await supa.signed_url(config.AUDIO_BUCKET, seg["storage_path"], 60 * 60 * 24)
+        jobs.append((seg, await fal.submit(url)))
+    for seg, job in jobs:
+        await supa.update(
+            "audio_segments",
+            {"media_id": f"eq.{seg['media_id']}", "seg_idx": f"eq.{seg['seg_idx']}"},
+            {"fal_status_url": job["status_url"], "fal_response_url": job["response_url"]},
+        )
     await supa.delete("transcript_chunks", {"lecture_id": f"eq.{lecture_id}"})
     await update_lecture(
         lecture_id,
         {
             "extract_status": "transcribing",
             "extract_error": None,
-            "fal_request_id": job["request_id"],
-            "fal_status_url": job["status_url"],
-            "fal_response_url": job["response_url"],
+            "fal_request_id": None,
+            "fal_status_url": None,
+            "fal_response_url": None,
             "raw_transcript": None,
             "transcript": None,
         },
@@ -84,38 +110,54 @@ async def start_extract(lecture_id: str) -> None:
 
 async def _transcribe(lecture: dict[str, Any]) -> None:
     lecture_id = lecture["id"]
+    segments = await ordered_segments(lecture_id)
+    if not segments or any(not s.get("fal_status_url") for s in segments):
+        await update_lecture(lecture_id, {"extract_status": "idle", "extract_error": "음성 인식 작업 정보가 없습니다. 다시 추출해주세요."})
+        raise JobError("missing whisper jobs")
+
     started = time.monotonic()
-    while True:
-        st = await fal.status(lecture["fal_status_url"])
-        if st == "COMPLETED":
+    waiting = list(segments)
+    while waiting:
+        still = []
+        for seg in waiting:
+            if await fal.status(seg["fal_status_url"]) != "COMPLETED":
+                still.append(seg)
+        waiting = still
+        if not waiting:
             break
         if time.monotonic() - started > WHISPER_TIMEOUT_SEC:
             await update_lecture(lecture_id, {"extract_status": "idle", "extract_error": "Whisper 작업이 너무 오래 걸려 중단했습니다."})
             raise JobError("Whisper timeout")
         await asyncio.sleep(5)
 
-    try:
-        output = await fal.result(lecture["fal_response_url"])
-    except fal.WhisperFailed as e:
-        await update_lecture(lecture_id, {"extract_status": "idle", "extract_error": str(e)})
-        raise
+    chunks: list[dict[str, Any]] = []
+    langs: list[str] = []
+    for seg in segments:
+        try:
+            output = await fal.result(seg["fal_response_url"])
+        except fal.WhisperFailed as e:
+            await update_lecture(lecture_id, {"extract_status": "idle", "extract_error": str(e)})
+            raise
+        langs += output.get("inferred_languages") or []
+        for c in build_chunks(output):
+            chunks.append(
+                {**c, "start_sec": _shift(c["start_sec"], seg["offset_sec"]), "end_sec": _shift(c["end_sec"], seg["offset_sec"])}
+            )
 
-    chunks = build_chunks(output)
     if not chunks:
         await update_lecture(lecture_id, {"extract_status": "idle", "extract_error": "음성에서 인식된 텍스트가 없습니다."})
         raise JobError("empty transcript")
 
     await supa.delete("transcript_chunks", {"lecture_id": f"eq.{lecture_id}"})
     await supa.insert("transcript_chunks", [{"lecture_id": lecture_id, "idx": i, **c} for i, c in enumerate(chunks)])
-    last_end = next((c["end_sec"] for c in reversed(chunks) if c["end_sec"] is not None), None)
-    langs = output.get("inferred_languages") or []
+    total = segments[-1]["offset_sec"] + float(segments[-1].get("duration_sec") or 0)
     await update_lecture(
         lecture_id,
         {
             "extract_status": "correcting",
             "raw_transcript": "\n\n".join(c["raw_text"] for c in chunks),
             "language": langs[0] if langs else (config.WHISPER_LANGUAGE or None),
-            "duration_sec": last_end,
+            "duration_sec": total or None,
         },
     )
 

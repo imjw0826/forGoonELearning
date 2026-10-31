@@ -29,10 +29,15 @@ CORRECT_CONCURRENCY = 4
 SECTION_CONCURRENCY = 3
 MAX_CHUNKS_PER_SECTION = 6
 MAX_PART_BYTES = 8 * 1024 * 1024
-MAX_MEDIA_BYTES = 2 * 1024 ** 3
-MAX_PARTS = MAX_MEDIA_BYTES // MAX_PART_BYTES
+# No fixed file-size cap: an upload is accepted when the volume has room for it (see /init).
+MAX_PARTS = 1_000_000
+# Room kept free on the volume besides the file being uploaded.
+DISK_HEADROOM_BYTES = 256 * 1024 ** 2
+# Long recordings are split into mp3 segments so each stays under Supabase's 50MB object limit
+# (2h at 32kbps ≈ 29MB).
+SEGMENT_SECONDS = 2 * 60 * 60
 MAX_AUDIO_BYTES = 45 * 1024 * 1024
-CONVERSION_TIMEOUT_SEC = 2 * 60 * 60
+CONVERSION_TIMEOUT_SEC = 6 * 60 * 60
 
 OCR_LANGUAGES = _env("OCR_LANGUAGES", "kor+eng+chi_sim+chi_tra")
 MAX_PDF_BYTES = 50 * 1024 * 1024

@@ -1,12 +1,40 @@
 "use client";
 
-import { BookOpen, Lock, LockOpen, Menu, Plus, X } from "lucide-react";
+import { Lock, LockOpen, Menu, Plus, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "@/components/ui/sonner";
+import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/client/api";
 import type { Course } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { useAccess } from "./AccessProvider";
+
+/** Stable soft colour per course, so the list is easy to scan. */
+function courseHue(id: string) {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+}
+
+export function CourseMark({ course, className }: { course: Pick<Course, "id" | "name">; className?: string }) {
+  const hue = courseHue(course.id);
+  return (
+    <span
+      aria-hidden
+      className={cn("flex size-5 shrink-0 items-center justify-center rounded-[5px] text-[10px] font-semibold", className)}
+      style={{
+        background: `oklch(0.94 0.045 ${hue})`,
+        color: `oklch(0.45 0.12 ${hue})`,
+      }}
+    >
+      {course.name.trim().charAt(0) || "·"}
+    </span>
+  );
+}
 
 export function Sidebar({ courses }: { courses: Course[] }) {
   const pathname = usePathname();
@@ -17,30 +45,33 @@ export function Sidebar({ courses }: { courses: Course[] }) {
   return (
     <>
       {/* Mobile top bar */}
-      <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 md:hidden">
-        <button onClick={() => setMobileOpen(true)} className="rounded-md p-1 text-zinc-600 hover:bg-zinc-200" aria-label="메뉴">
-          <Menu className="h-5 w-5" />
-        </button>
-        <Link href="/" className="text-lg font-bold tracking-tight">
-          Yoyaku
-        </Link>
+      <div className="flex h-12 items-center gap-2 border-b bg-sidebar px-3 md:hidden">
+        <Button variant="ghost" size="icon-sm" onClick={() => setMobileOpen(true)} aria-label="메뉴 열기">
+          <Menu />
+        </Button>
+        <Brand />
       </div>
 
-      {mobileOpen && <div className="fixed inset-0 z-30 bg-zinc-900/30 md:hidden" onClick={() => setMobileOpen(false)} />}
+      <div
+        onClick={() => setMobileOpen(false)}
+        className={cn(
+          "fixed inset-0 z-30 bg-black/25 transition-opacity duration-300 md:hidden",
+          mobileOpen ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      />
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 transition-transform md:static md:translate-x-0 ${
-          mobileOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar",
+          "transition-transform duration-300 ease-[var(--ease-drawer)] md:static md:w-60 md:translate-x-0",
+          mobileOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
+        )}
       >
-        <div className="flex items-center justify-between px-5 pt-6 pb-4">
-          <Link href="/" className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">Y</span>
-            <span className="text-xl font-bold tracking-tight">Yoyaku</span>
-          </Link>
-          <button onClick={() => setMobileOpen(false)} className="rounded-md p-1 text-zinc-500 hover:bg-zinc-200 md:hidden" aria-label="닫기">
-            <X className="h-5 w-5" />
-          </button>
+        <div className="flex h-14 items-center justify-between px-4">
+          <Brand />
+          <Button variant="ghost" size="icon-xs" onClick={() => setMobileOpen(false)} className="md:hidden" aria-label="메뉴 닫기">
+            <X />
+          </Button>
         </div>
 
         <CourseList courses={courses} pathname={pathname} />
@@ -50,19 +81,28 @@ export function Sidebar({ courses }: { courses: Course[] }) {
   );
 }
 
+function Brand() {
+  return (
+    <Link href="/" className="flex items-center gap-2 rounded-md">
+      <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-[13px] font-bold tracking-[-0.04em] text-primary-foreground">
+        Yo
+      </span>
+      <span className="text-[15px] font-semibold tracking-[-0.025em]">Yoyaku</span>
+    </Link>
+  );
+}
+
 function CourseList({ courses, pathname }: { courses: Course[]; pathname: string }) {
   const router = useRouter();
   const { guard } = useAccess();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
     setBusy(true);
-    setError(null);
     try {
       const { course } = await api<{ course: Course }>("/api/courses", { body: { name } });
       setName("");
@@ -70,68 +110,71 @@ function CourseList({ courses, pathname }: { courses: Course[]; pathname: string
       router.push(`/courses/${course.id}`);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <nav className="flex-1 overflow-y-auto px-3">
-      <div className="flex items-center justify-between px-2 pb-2">
-        <span className="text-xs font-semibold tracking-wide text-zinc-500">듣는 과목</span>
-        <button
-          onClick={() => guard(() => setAdding(true))}
-          className="rounded-md p-1 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900"
-          title="과목 추가"
-          aria-label="과목 추가"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
+    <nav className="flex-1 overflow-y-auto px-2 pt-2">
+      <div className="flex h-8 items-center justify-between pr-1 pl-2.5">
+        <span className="text-2xs font-medium text-muted-foreground">듣는 과목</span>
+        <Tooltip label="과목 추가" side="right">
+          <Button variant="ghost" size="icon-xs" onClick={() => guard(() => setAdding(true))} aria-label="과목 추가">
+            <Plus />
+          </Button>
+        </Tooltip>
       </div>
 
       {adding && (
-        <form onSubmit={submit} className="mb-2 px-1">
-          <input
+        <form onSubmit={submit} className="mb-1 animate-enter px-1 pb-1">
+          <Input
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setAdding(false)}
             placeholder="과목 이름"
             disabled={busy}
-            className="w-full rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+            className="h-8 bg-background"
           />
-          {error && <p className="mt-1 px-1 text-xs text-red-600">{error}</p>}
           <div className="mt-1.5 flex justify-end gap-1">
-            <button type="button" onClick={() => setAdding(false)} className="rounded px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-200">
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => setAdding(false)}>
               취소
-            </button>
-            <button type="submit" disabled={busy || !name.trim()} className="rounded bg-brand-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50">
+            </Button>
+            <Button type="submit" size="sm" className="h-7 px-2.5" disabled={busy || !name.trim()}>
               추가
-            </button>
+            </Button>
           </div>
         </form>
       )}
 
-      <ul className="space-y-0.5">
-        {courses.map((c) => {
+      <ul className="space-y-px">
+        {courses.map((c, i) => {
           const active = pathname.startsWith(`/courses/${c.id}`);
           return (
-            <li key={c.id}>
+            <li key={c.id} className="stagger" style={{ "--i": i } as React.CSSProperties}>
               <Link
                 href={`/courses/${c.id}`}
-                className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm ${
-                  active ? "bg-white font-medium text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-600 hover:bg-zinc-200/60 hover:text-zinc-900"
-                }`}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "group flex h-8 items-center gap-2.5 rounded-md px-2 text-sm transition-colors duration-150",
+                  active
+                    ? "bg-background font-medium text-foreground shadow-xs ring-1 ring-border"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
               >
-                <BookOpen className={`h-4 w-4 shrink-0 ${active ? "text-brand-600" : "text-zinc-400"}`} />
+                <CourseMark course={c} />
                 <span className="truncate">{c.name}</span>
               </Link>
             </li>
           );
         })}
         {courses.length === 0 && !adding && (
-          <li className="px-2.5 py-2 text-sm text-zinc-400">아직 과목이 없어요. + 를 눌러 추가하세요.</li>
+          <li className="px-2.5 py-2 text-xs leading-5 text-muted-foreground">
+            아직 과목이 없어요.
+            <br />+ 를 눌러 추가하세요.
+          </li>
         )}
       </ul>
     </nav>
@@ -141,14 +184,23 @@ function CourseList({ courses, pathname }: { courses: Course[]; pathname: string
 function AccessFooter() {
   const { unlocked, openDialog, lock } = useAccess();
   return (
-    <div className="border-t border-zinc-200 p-3">
+    <div className="border-t border-sidebar-border p-2">
       <button
         onClick={() => (unlocked ? lock() : openDialog())}
-        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm text-zinc-600 hover:bg-zinc-200/60"
-        title={unlocked ? "클릭하면 다시 잠급니다" : "접근 코드 입력"}
+        className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent"
       >
-        {unlocked ? <LockOpen className="h-4 w-4 text-emerald-600" /> : <Lock className="h-4 w-4 text-zinc-400" />}
-        <span>{unlocked ? "편집 가능" : "읽기 전용 · 코드 입력"}</span>
+        <span
+          className={cn(
+            "flex size-7 items-center justify-center rounded-md",
+            unlocked ? "bg-success-soft text-success" : "bg-secondary text-muted-foreground",
+          )}
+        >
+          {unlocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />}
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[13px] leading-4 font-medium">{unlocked ? "편집 가능" : "읽기 전용"}</span>
+          <span className="block text-2xs text-muted-foreground">{unlocked ? "눌러서 다시 잠그기" : "코드를 입력해 편집하기"}</span>
+        </span>
       </button>
     </div>
   );

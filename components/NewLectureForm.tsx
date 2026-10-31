@@ -1,39 +1,36 @@
 "use client";
 
-import { ArrowLeft, Check, FileUp, Film, Loader2, Music, Paperclip, X } from "lucide-react";
+import { ChevronLeft, FileText, Loader2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input, Label } from "@/components/ui/input";
+import { Segmented } from "@/components/ui/segmented";
+import { toast } from "@/components/ui/sonner";
 import { api } from "@/lib/client/api";
-import { isVideo, needsConversion } from "@/lib/client/audio";
-import { processAndUploadAudio, uploadMaterial, type AudioMode, type AudioStage } from "@/lib/client/upload";
-import { formatBytes, formatTime } from "@/lib/format";
-import { SERVER_CONVERSION_THRESHOLD, validateMediaSize } from "@/lib/upload-limits";
+import { uploadMaterial, type AudioMode } from "@/lib/client/upload";
+import { formatBytes } from "@/lib/format";
 import { useAccess } from "./AccessProvider";
-import { ProgressBar } from "./ProgressBar";
-
-type StepKey = "create" | "convert" | "upload" | "materials";
-type StepState = "pending" | "active" | "done" | "skip";
+import { Dropzone, MEDIA_ACCEPT, MODE_OPTIONS, MediaQueueList, useMediaQueue } from "./MediaQueue";
 
 const MATERIAL_ACCEPT = ".pdf,.pptx,.docx,.txt,.md";
 
 export function NewLectureForm({ courseId, courseName, nextSessionNo }: { courseId: string; courseName: string; nextSessionNo: number }) {
   const router = useRouter();
   const { guard } = useAccess();
+  const queue = useMediaQueue();
   const [sessionNo, setSessionNo] = useState(nextSessionNo);
   const [title, setTitle] = useState("");
-  const [media, setMedia] = useState<File | null>(null);
   const [materials, setMaterials] = useState<File[]>([]);
-  const [mode, setMode] = useState<AudioMode>("browser");
-
-  const [running, setRunning] = useState(false);
-  const [steps, setSteps] = useState<Record<StepKey, StepState>>({ create: "pending", convert: "pending", upload: "pending", materials: "pending" });
-  const [detail, setDetail] = useState<string>("");
-  const [ratio, setRatio] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<AudioMode>("auto");
   const [lectureId, setLectureId] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [activeMode, setActiveMode] = useState<AudioMode>("browser");
+  const [phase, setPhase] = useState<"idle" | "media" | "materials">("idle");
+  const [failed, setFailed] = useState(0);
+
+  const running = phase !== "idle";
+  const totalBytes = queue.items.reduce((s, it) => s + it.file.size, 0);
 
   // Warn before closing the tab while converting/uploading.
   useEffect(() => {
@@ -43,289 +40,195 @@ export function NewLectureForm({ courseId, courseName, nextSessionNo }: { course
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [running]);
 
-  const mark = (k: StepKey, s: StepState) => setSteps((prev) => ({ ...prev, [k]: s }));
-
   const run = async () => {
-    if (!media) return;
-    try { validateMediaSize(media.size); }
-    catch (err) { setError((err as Error).message); return; }
-    setRunning(true);
-    setError(null);
-    setWarnings([]);
-    const convert = needsConversion(media);
-    let effectiveMode: AudioMode = convert ? mode : "browser";
-    setSteps({ create: "active", convert: convert ? "pending" : "skip", upload: "pending", materials: materials.length ? "pending" : "skip" });
-    setActiveMode(effectiveMode);
-
+    if (!queue.items.length) return;
+    setFailed(0);
     let id = lectureId;
     try {
       if (!id) {
         const { lecture } = await api<{ lecture: { id: string } }>("/api/lectures", {
-          body: { courseId, sessionNo, title: title.trim() || undefined, sourceFilename: media.name },
+          body: { courseId, sessionNo, title: title.trim() || undefined, sourceFilename: queue.items[0].file.name },
         });
         id = lecture.id;
         setLectureId(id);
       }
-      mark("create", "done");
 
-      await processAndUploadAudio(
-        id,
-        media,
-        (s: AudioStage) => {
-          if (s.stage === "convert") {
-            mark("convert", "active");
-            const p = s.progress;
-            setRatio(p.ratio);
-            setDetail(p.duration ? `${formatTime(p.seconds)} / ${formatTime(p.duration)}` : p.seconds ? formatTime(p.seconds) : "ffmpeg 불러오는 중…");
-          } else if (s.stage === "fallback") {
-            effectiveMode = "server";
-            setActiveMode("server");
-            mark("convert", "pending");
-            setWarnings((w) => [...w, `브라우저 변환에 실패해 서버(Railway)에서 변환합니다. (${s.reason})`]);
-          } else if (s.stage === "upload") {
-            if (effectiveMode === "browser" && convert) mark("convert", "done");
-            mark("upload", "active");
-            setRatio(s.ratio);
-            setDetail(`${Math.round(s.ratio * 100)}%`);
-          } else if (s.stage === "server-convert") {
-            mark("upload", "done");
-            mark("convert", "active");
-            setRatio(null);
-            setDetail("");
-          } else {
-            mark("upload", "done");
-            if (convert) mark("convert", "done");
-          }
-        },
-        effectiveMode,
-      );
+      setPhase("media");
+      const failedCount = await queue.run(id, mode, queue.items);
 
       if (materials.length) {
-        mark("materials", "active");
-        for (let i = 0; i < materials.length; i++) {
-          const f = materials[i];
-          setDetail(`${i + 1}/${materials.length} · ${f.name}`);
-          setRatio(0);
-          const res = await uploadMaterial(id, f, setRatio);
-          if (res.warning) setWarnings((w) => [...w, `${f.name}: ${res.warning}`]);
+        setPhase("materials");
+        const pending = [...materials];
+        for (const f of pending) {
+          try {
+            const res = await uploadMaterial(id, f);
+            if (res.warning) toast.warning(f.name, { description: res.warning });
+            setMaterials((m) => m.filter((x) => x !== f));
+          } catch (err) {
+            toast.error(`${f.name} 업로드 실패`, { description: err instanceof Error ? err.message : String(err) });
+          }
         }
-        mark("materials", "done");
       }
 
-      router.push(`/courses/${courseId}/lectures/${id}`);
-      router.refresh();
+      setFailed(failedCount);
+      if (failedCount === 0) {
+        router.push(`/courses/${courseId}/lectures/${id}`);
+        router.refresh();
+        return;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setSteps((prev) => {
-        const next = { ...prev };
-        (Object.keys(next) as StepKey[]).forEach((k) => next[k] === "active" && (next[k] = "pending"));
-        return next;
-      });
-      setRunning(false);
+      toast.error(err instanceof Error ? err.message : String(err));
     }
+    setPhase("idle");
   };
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    guard(run);
-  };
-
-  const started = running || lectureId != null;
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-6 sm:px-8 sm:py-8">
-      <Link href={`/courses/${courseId}`} className="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900">
-        <ArrowLeft className="h-4 w-4" /> {courseName}
+    <div className="mx-auto max-w-2xl px-4 py-6 pb-28 sm:px-8 sm:py-10">
+      <Link
+        href={`/courses/${courseId}`}
+        className="inline-flex items-center gap-0.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronLeft className="size-4" /> {courseName}
       </Link>
-      <h1 className="mt-3 text-2xl font-bold tracking-tight">강의 추가</h1>
-      <p className="mt-1 text-sm text-zinc-500">영상을 올리면 음성(mp3)만 추출해 저장하고, 추출·요약은 서버(Railway)에서 진행돼요.</p>
+      <h1 className="mt-3 animate-enter text-2xl">강의 추가</h1>
+      <p className="mt-1 animate-enter text-sm text-muted-foreground">
+        영상에서 음성만 뽑아 저장하고, 대본 추출과 요약은 서버에서 진행돼요. 한 강의가 여러 영상으로 나뉘어 있으면 모두
+        올려 주세요.
+      </p>
 
-      <form onSubmit={submit} className="mt-6 space-y-6">
-        <div className="grid grid-cols-[6rem_1fr] gap-3">
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700">회차</span>
-            <input
-              type="number"
-              min={1}
-              value={sessionNo}
-              disabled={started}
-              onChange={(e) => setSessionNo(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700">제목</span>
-            <input
-              value={title}
-              disabled={started}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={`${sessionNo}회차 강의`}
-              className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-            />
-          </label>
-        </div>
-
-        {/* Media */}
-        <div>
-          <span className="text-sm font-medium text-zinc-700">강의 영상 또는 오디오 *</span>
-          {media ? (
-            <div className="mt-1 flex items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3">
-              {isVideo(media) ? <Film className="h-5 w-5 text-brand-600" /> : <Music className="h-5 w-5 text-brand-600" />}
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{media.name}</p>
-                <p className="text-xs text-zinc-500">
-                  {formatBytes(media.size)} · {needsConversion(media) ? "mp3로 변환 후 저장" : "mp3 그대로 업로드"}
-                </p>
-              </div>
-              {!started && (
-                <button type="button" onClick={() => setMedia(null)} className="rounded p-1 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-700" aria-label="파일 제거">
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-          ) : (
-            <label className="mt-1 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-zinc-300 px-6 py-10 text-center hover:border-brand-400 hover:bg-brand-50/30">
-              <FileUp className="h-7 w-7 text-zinc-400" />
-              <span className="mt-2 text-sm font-medium text-zinc-700">클릭해서 파일 선택</span>
-              <span className="mt-0.5 text-xs text-zinc-500">MP4, MOV, MKV, WEBM, MP3, M4A, WAV … (1~2GB 영상 가능)</span>
-              <input type="file" accept="video/*,audio/*,.mkv,.m4a" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0] ?? null;
-                setMedia(file);
-                setError(null);
-                setMode(file && file.size >= SERVER_CONVERSION_THRESHOLD ? "server" : "browser");
-              }} />
-            </label>
-          )}
-        </div>
-
-        {media && needsConversion(media) && (
-          <fieldset disabled={started}>
-            <span className="text-sm font-medium text-zinc-700">음성 추출 방식</span>
-            <div className="mt-1 grid gap-2 sm:grid-cols-2">
-              <ModeOption checked={mode === "browser"} onChange={() => setMode("browser")} title="브라우저에서 변환" desc="이 컴퓨터에서 mp3를 뽑아 올려요. 큰 영상은 기기의 메모리와 성능에 따라 실패할 수 있어요." />
-              <ModeOption checked={mode === "server"} onChange={() => setMode("server")} title="서버에서 변환 (대용량 권장)" desc="원본을 나눠 올린 뒤 서버에서 변환해요. 512 MiB 이상 파일은 기본으로 선택됩니다." />
-            </div>
-          </fieldset>
-        )}
-
-        {/* Materials */}
-        <div>
-          <span className="text-sm font-medium text-zinc-700">강의자료 (선택)</span>
-          <p className="text-xs text-zinc-500">PPT는 PPTX 또는 PDF로 올려주세요. 요약할 때 대본과 함께 사용됩니다.</p>
-          <ul className="mt-2 space-y-1.5">
-            {materials.map((f, i) => (
-              <li key={`${f.name}-${i}`} className="flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm">
-                <Paperclip className="h-4 w-4 text-zinc-400" />
-                <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                <span className="text-xs text-zinc-400">{formatBytes(f.size)}</span>
-                {!started && (
-                  <button type="button" onClick={() => setMaterials((m) => m.filter((_, j) => j !== i))} className="rounded p-0.5 text-zinc-400 hover:text-zinc-700" aria-label="자료 제거">
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-          {!started && (
-            <label className="mt-2 inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50">
-              <Paperclip className="h-4 w-4" /> 자료 추가
-              <input
-                type="file"
-                multiple
-                accept={MATERIAL_ACCEPT}
-                className="hidden"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  setMaterials((m) => [...m, ...files]);
-                  e.target.value = "";
-                }}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          guard(run);
+        }}
+        className="mt-8 space-y-5"
+      >
+        <Card className="animate-enter">
+          <CardHeader>
+            <CardTitle>기본 정보</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-[5.5rem_1fr] gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="session">회차</Label>
+              <Input
+                id="session"
+                type="number"
+                min={1}
+                value={sessionNo}
+                disabled={!!lectureId}
+                onChange={(e) => setSessionNo(Number(e.target.value))}
+                className="tabular"
               />
-            </label>
-          )}
-        </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="title">제목</Label>
+              <Input
+                id="title"
+                value={title}
+                disabled={!!lectureId}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={`${sessionNo}회차 강의`}
+              />
+            </div>
+          </CardContent>
+        </Card>
 
-        {/* Progress */}
-        {started && (
-          <div className="space-y-3 rounded-xl border border-zinc-200 p-4">
-            <Step state={steps.create} label="강의 생성" />
-            {activeMode === "browser" ? (
-              <>
-                <Step state={steps.convert} label="영상에서 음성 추출 (브라우저 ffmpeg)" detail={steps.convert === "active" ? detail : undefined} ratio={steps.convert === "active" ? ratio : undefined} />
-                <Step state={steps.upload} label="오디오 업로드" detail={steps.upload === "active" ? detail : undefined} ratio={steps.upload === "active" ? ratio : undefined} />
-              </>
-            ) : (
-              <>
-                <Step state={steps.upload} label="원본 영상을 서버(Railway)로 업로드" detail={steps.upload === "active" ? detail : undefined} ratio={steps.upload === "active" ? ratio : undefined} />
-                <Step state={steps.convert} label="서버에서 음성 추출 (ffmpeg)" ratio={steps.convert === "active" ? null : undefined} />
-              </>
+        <Card className="animate-enter [animation-delay:40ms]">
+          <CardHeader className="flex-wrap justify-between">
+            <div>
+              <CardTitle>영상 · 오디오</CardTitle>
+              <CardDescription>여러 파일은 이 순서대로 이어서 한 강의가 돼요. 크기 제한은 없어요.</CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">변환</span>
+              <Segmented value={mode} onChange={setMode} options={MODE_OPTIONS} disabled={running} />
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Dropzone
+              onFiles={queue.add}
+              accept={MEDIA_ACCEPT}
+              title="영상이나 오디오를 끌어 놓거나 클릭해서 선택"
+              hint="MP4 · MOV · MKV · WEBM · MP3 · M4A · WAV, 여러 개 선택 가능"
+              compact={queue.items.length > 0}
+              disabled={running}
+            />
+            <MediaQueueList items={queue.items} onRemove={queue.remove} onMove={queue.move} locked={running || !!lectureId} />
+            <p className="text-xs leading-5 text-muted-foreground">
+              자동: 512MB 미만은 이 브라우저에서, 그 이상은 서버에서 음성을 추출해요. 한쪽이 실패하면 다른 쪽으로 다시
+              시도해요.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="animate-enter [animation-delay:80ms]">
+          <CardHeader>
+            <div>
+              <CardTitle>
+                강의자료 <span className="font-normal text-muted-foreground">(선택)</span>
+              </CardTitle>
+              <CardDescription>PDF · PPTX · DOCX · TXT. 교정과 요약에 함께 사용돼요.</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Dropzone
+              onFiles={(files) => setMaterials((m) => [...m, ...files])}
+              accept={MATERIAL_ACCEPT}
+              title="강의자료 추가"
+              compact
+              disabled={running}
+            />
+            {materials.length > 0 && (
+              <ul className="divide-y rounded-xl border">
+                {materials.map((f, i) => (
+                  <li key={`${f.name}-${i}`} className="flex animate-enter items-center gap-3 px-3.5 py-2.5">
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
+                    <span className="text-xs text-muted-foreground tabular">{formatBytes(f.size)}</span>
+                    {!running && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => setMaterials((m) => m.filter((_, j) => j !== i))}
+                        aria-label="자료 빼기"
+                      >
+                        <X />
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             )}
-            <Step state={steps.materials} label="강의자료 업로드 · 텍스트 추출" detail={steps.materials === "active" ? detail : undefined} ratio={steps.materials === "active" ? ratio : undefined} />
-            {running && <p className="pt-1 text-xs text-zinc-500">업로드가 끝날 때까지 이 탭을 닫지 마세요. 1~2GB 영상은 몇 분 걸릴 수 있어요.</p>}
+          </CardContent>
+        </Card>
+
+        {/* Sticky action bar */}
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/85 backdrop-blur-md md:left-60">
+          <div className="mx-auto flex max-w-2xl items-center gap-3 px-4 py-3 sm:px-8">
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground tabular">
+              {phase === "media"
+                ? "영상 처리 중 · 끝날 때까지 이 탭을 닫지 마세요"
+                : phase === "materials"
+                  ? "강의자료 올리는 중"
+                  : failed > 0
+                    ? `${failed}개 파일이 실패했어요. 다시 시도하거나 강의 페이지에서 추가할 수 있어요.`
+                    : queue.items.length
+                      ? `영상 ${queue.items.length}개 · ${formatBytes(totalBytes)}${materials.length ? ` · 자료 ${materials.length}개` : ""}`
+                      : "영상이나 오디오를 하나 이상 추가하세요"}
+            </p>
+            {lectureId && !running && (
+              <Button type="button" variant="ghost" asChild>
+                <Link href={`/courses/${courseId}/lectures/${lectureId}`}>강의로 이동</Link>
+              </Button>
+            )}
+            <Button type="submit" disabled={!queue.items.length || running}>
+              {running && <Loader2 className="animate-spin" />}
+              {running ? "처리 중" : failed > 0 ? "실패한 파일 다시 시도" : "업로드"}
+            </Button>
           </div>
-        )}
-
-        {warnings.length > 0 && (
-          <ul className="space-y-1 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-            {warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        )}
-        {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          {lectureId && !running && (
-            <Link href={`/courses/${courseId}/lectures/${lectureId}`} className="rounded-lg px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100">
-              강의 페이지로 이동
-            </Link>
-          )}
-          <button
-            type="submit"
-            disabled={!media || running}
-            className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 disabled:opacity-50"
-          >
-            {running && <Loader2 className="h-4 w-4 animate-spin" />}
-            {running ? "처리 중…" : error ? "다시 시도" : "업로드"}
-          </button>
         </div>
       </form>
     </div>
   );
 }
-
-function Step({ state, label, detail, ratio }: { state: StepState; label: string; detail?: string; ratio?: number | null }) {
-  if (state === "skip") return null;
-  return (
-    <div>
-      <div className="flex items-center gap-2.5 text-sm">
-        <span
-          className={`flex h-5 w-5 items-center justify-center rounded-full ${
-            state === "done" ? "bg-emerald-500 text-white" : state === "active" ? "bg-brand-100 text-brand-600" : "bg-zinc-100 text-zinc-300"
-          }`}
-        >
-          {state === "done" ? <Check className="h-3 w-3" /> : state === "active" ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
-        </span>
-        <span className={state === "pending" ? "text-zinc-400" : "text-zinc-800"}>{label}</span>
-        {detail && <span className="ml-auto text-xs text-zinc-500 tabular-nums">{detail}</span>}
-      </div>
-      {state === "active" && ratio !== undefined && (
-        <div className="mt-2 pl-7">
-          <ProgressBar ratio={ratio} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ModeOption({ checked, onChange, title, desc }: { checked: boolean; onChange: () => void; title: string; desc: string }) {
-  return (
-    <label className={`flex cursor-pointer gap-2.5 rounded-xl border p-3 ${checked ? "border-brand-500 bg-brand-50/40 ring-1 ring-brand-500" : "border-zinc-200 hover:bg-zinc-50"}`}>
-      <input type="radio" checked={checked} onChange={onChange} className="mt-0.5 accent-brand-600" />
-      <span>
-        <span className="block text-sm font-medium">{title}</span>
-        <span className="mt-0.5 block text-xs text-zinc-500">{desc}</span>
-      </span>
-    </label>
-  );
-}
-

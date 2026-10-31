@@ -7,6 +7,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { Button } from "@/components/ui/button";
 import { slugify } from "@/lib/format";
 
 function textOf(node: ReactNode): string {
@@ -59,15 +60,15 @@ export function NoteView({ note, filename }: { note: string; filename: string })
   return (
     <div>
       <div className="mb-4 flex justify-end gap-2">
-        <button onClick={copy} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50">
-          {copied ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+        <Button variant="outline" size="sm" onClick={copy}>
+          {copied ? <Check className="animate-pop-in text-success" /> : <Copy />}
           {copied ? "복사됨" : "Markdown 복사"}
-        </button>
-        <button onClick={download} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50">
-          <Download className="h-4 w-4" /> .md 다운로드
-        </button>
+        </Button>
+        <Button variant="outline" size="sm" onClick={download}>
+          <Download /> .md 다운로드
+        </Button>
       </div>
-      <article className="note-body prose prose-zinc max-w-none prose-headings:tracking-tight prose-h1:text-2xl prose-h2:mt-10 prose-h2:text-xl prose-h3:text-base prose-a:text-brand-600 prose-a:no-underline hover:prose-a:underline prose-li:my-0.5 prose-ul:my-1">
+      <article className="note-body prose max-w-none prose-headings:text-balance prose-h2:mt-12 prose-h3:mt-8 prose-a:font-normal prose-a:no-underline hover:prose-a:underline prose-ul:my-1.5 prose-hr:my-10 prose-table:text-sm">
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
           {note}
         </ReactMarkdown>

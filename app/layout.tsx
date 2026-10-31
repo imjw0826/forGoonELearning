@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { AccessProvider } from "@/components/AccessProvider";
+import { ConfirmProvider } from "@/components/ConfirmProvider";
 import { Sidebar } from "@/components/Sidebar";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { isUnlocked } from "@/lib/access";
 import { db } from "@/lib/supabase";
 import type { Course } from "@/lib/types";
@@ -29,27 +32,34 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="ko">
       <head>
+        <link rel="preconnect" href="https://cdn.jsdelivr.net" crossOrigin="" />
         <link
           rel="stylesheet"
           href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
         />
       </head>
       <body>
-        <AccessProvider initialUnlocked={unlocked}>
-          <div className="flex h-dvh flex-col md:flex-row">
-            <Sidebar courses={courses} />
-            <main className="min-w-0 flex-1 overflow-y-auto">
-              {error && (
-                <div className="m-6 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-                  <p className="font-medium">Supabase 연결에 실패했습니다.</p>
-                  <p className="mt-1 text-amber-800">{error}</p>
-                  <p className="mt-1 text-amber-800">README의 설정 방법(환경변수, SQL 마이그레이션)을 확인해주세요.</p>
-                </div>
-              )}
-              {children}
-            </main>
-          </div>
-        </AccessProvider>
+        <TooltipProvider delayDuration={300}>
+          <AccessProvider initialUnlocked={unlocked}>
+            <ConfirmProvider>
+            <div className="flex h-dvh flex-col md:flex-row">
+              <Sidebar courses={courses} />
+              <main id="main" className="min-w-0 flex-1 overflow-y-auto">
+                {error && (
+                  <div className="mx-auto mt-6 max-w-5xl px-4 sm:px-8">
+                    <div className="rounded-lg border border-warning/30 bg-warning-soft p-4 text-sm">
+                      <p className="font-medium">Supabase 연결에 실패했습니다.</p>
+                      <p className="mt-1 text-muted-foreground">{error}</p>
+                    </div>
+                  </div>
+                )}
+                {children}
+              </main>
+            </div>
+            </ConfirmProvider>
+          </AccessProvider>
+          <Toaster />
+        </TooltipProvider>
       </body>
     </html>
   );

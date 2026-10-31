@@ -1,6 +1,27 @@
 export type ExtractStatus = "idle" | "transcribing" | "correcting" | "done";
 export type SummaryStatus = "idle" | "planning" | "writing" | "done";
 export type AudioStatus = "none" | "uploading" | "converting" | "ready" | "error";
+export type MediaStatus = "pending" | "uploading" | "converting" | "ready" | "error";
+
+/** One uploaded video/audio file of a lecture (a lecture can have several, played in idx order). */
+export interface MediaItem {
+  id: string;
+  idx: number;
+  filename: string;
+  size_bytes: number | null;
+  status: MediaStatus;
+  error: string | null;
+  duration_sec: number | null;
+}
+
+/** A playable mp3 piece of a media file, with its start time on the lecture's timeline. */
+export interface AudioSegmentView {
+  media_id: string;
+  seg_idx: number;
+  offset_sec: number;
+  duration_sec: number;
+  url: string | null;
+}
 
 export interface Course {
   id: string;
@@ -36,8 +57,8 @@ export interface Lecture {
 /** Lecture row without the heavy text columns (for lists). */
 export type LectureSummary = Pick<
   Lecture,
-  "id" | "course_id" | "session_no" | "title" | "audio_path" | "audio_status" | "extract_status" | "summary_status" | "created_at"
->;
+  "id" | "course_id" | "session_no" | "title" | "extract_status" | "summary_status" | "created_at" | "duration_sec"
+> & { mediaCount: number; mediaBusy: boolean };
 
 export interface Material {
   id: string;
@@ -69,8 +90,7 @@ export interface NoteSection {
 
 /** Progress snapshot returned by the pipeline step endpoints. */
 export interface PipelineState {
-  audio_status: AudioStatus;
-  audio_error: string | null;
+  media: MediaItem[];
   extract_status: ExtractStatus;
   extract_error: string | null;
   summary_status: SummaryStatus;

@@ -12,6 +12,9 @@ def fmt_time(sec: float | None) -> str:
     return f"{h}:{m:02d}:{r:02d}" if h else f"{m}:{r:02d}"
 
 
+PLAN_TRANSCRIPT_BUDGET = 70_000
+
+
 def cap(text: str, max_len: int) -> str:
     return text[:max_len] + "\n…(이하 생략)" if len(text) > max_len else text
 
@@ -54,8 +57,12 @@ def correction_messages(lecture_title: str, materials: str, previous_tail: str, 
 
 def plan_messages(lecture_title: str, materials: str, chunks: list[dict[str, Any]]) -> list[dict[str, str]]:
     n = len(chunks)
+    # The outline only needs to see where topics change, so very long lectures get each
+    # section's opening shortened to keep the whole prompt within the model's context.
+    per_chunk = max(300, PLAN_TRANSCRIPT_BUDGET // max(n, 1))
     transcript = "\n\n".join(
-        f"[#{c['idx']}{' ' + fmt_time(c['start_sec']) if c.get('start_sec') is not None else ''}]\n{c['text']}" for c in chunks
+        f"[#{c['idx']}{' ' + fmt_time(c['start_sec']) if c.get('start_sec') is not None else ''}]\n{cap(c['text'], per_chunk)}"
+        for c in chunks
     )
     target = max(1, min(n, round(n / 3)))
     system = f"""당신은 대학 강의를 구조화하는 조교입니다. 강의 대본을 읽고, 강의가 진행된 순서대로 강의노트의 큰 목차(대단원)를 설계합니다.
