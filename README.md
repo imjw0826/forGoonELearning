@@ -1,38 +1,40 @@
-# Yoyaku
+# Yoyaku (forGoonELearning)
 
-강의 영상·오디오와 강의자료를 바탕으로 대본과 강의노트를 만드는 웹앱입니다. 과목별로 강의를 관리하고, 대본을 검색하거나 강의노트를 확인할 수 있습니다.
+## 1. 프로젝트 소개
 
-## 동작 원리
+강의 영상·오디오와 강의자료로 대본과 강의노트를 만들어 주는 웹앱입니다. 긴 강의를 다시 듣지 않고도 대본을 검색하고 정리된 노트로 복습할 수 있게 하는 것이 목적입니다.
 
-1. 한 강의에 영상·오디오를 여러 개 올릴 수 있고, 올린 순서대로 이어져 하나의 강의가 됩니다. 파일 크기 제한은 없습니다. FFmpeg로 음성만 추출하는데, 작은 파일은 브라우저에서, 큰 파일은 분할 업로드 후 Railway 워커에서 변환합니다. 긴 녹음은 2시간 단위 mp3로 나눠 저장합니다.
-2. fal.ai Whisper가 음성을 대본으로 변환하고, DeepSeek가 강의자료를 참고해 오탈자와 전문 용어를 교정합니다.
-3. PDF·PPTX·DOCX 등의 자료에서 텍스트를 추출합니다. 스캔 PDF는 Poppler와 Tesseract OCR로 한국어·영어·한자를 읽어 교정과 요약에 활용합니다.
-4. 교정된 대본과 자료를 바탕으로 DeepSeek가 강의 순서에 맞는 목차와 강의노트를 생성합니다. 처리 결과와 파일은 Supabase에 저장합니다.
-
-## 기술 스택
+## 2. 기술 스택
 
 | 영역 | 기술 |
 | --- | --- |
-| 웹 화면·API | Next.js, React, TypeScript, Tailwind CSS, shadcn/ui 방식 컴포넌트(Radix UI) |
-| 백그라운드 처리 | Python, FastAPI, FFmpeg |
+| 웹 화면·API | Next.js 16, React 19, TypeScript, Tailwind CSS, Radix UI |
+| 백그라운드 처리 | Python, FastAPI, FFmpeg (브라우저에서는 ffmpeg.wasm) |
 | 음성 인식·문서 생성 | fal.ai Whisper, DeepSeek |
-| PDF 문자 인식 | Poppler, Tesseract OCR |
+| 자료 텍스트 추출 | unpdf, Poppler, Tesseract OCR |
 | 데이터·파일 저장 | Supabase PostgreSQL, Storage |
 | 배포 | Vercel(웹), Railway(Docker 워커) |
 
-## 파일 구조
+## 3. 이용 방법
 
-```text
-app/                    페이지와 API 라우트
-components/             강의 관리·대본·노트 화면 컴포넌트
-lib/                    업로드·자료 추출·DB·워커 연동
-worker/
-  app/                  음성 변환·OCR·AI 처리와 프롬프트
-  tests/                워커 테스트
-  Dockerfile            Railway 워커 실행 환경
-supabase/migrations/    데이터베이스 스키마
-scripts/                FFmpeg 웹 리소스 준비
-public/                 정적 리소스
-tests/                 웹 업로드 검증
-.github/workflows/      자동 빌드·테스트
+**웹사이트:** https://yoyaku-nu.vercel.app (업로드 등 일부 버튼은 접근 코드를 입력해야 열립니다)
+
+- 과목을 만들고 강의별로 영상·오디오를 올립니다. 한 강의에 여러 파일을 올리면 순서대로 이어져 하나의 강의가 됩니다.
+- PDF·PPTX·DOCX 강의자료를 함께 올리면 대본 교정과 노트 작성에 참고합니다. 스캔 PDF도 OCR로 읽습니다.
+- 처리가 끝나면 교정된 대본을 검색하고, 목차가 있는 강의노트(수식 포함)를 확인합니다.
+
+직접 운영하려면 Supabase 프로젝트와 Railway 워커가 필요합니다.
+
+```bash
+git clone https://github.com/imjw0826/forGoonELearning.git
+cd forGoonELearning
+npm install
+cp .env.example .env.local   # Supabase, 워커 주소, 접근 코드 입력
+npm run dev
 ```
+
+데이터베이스 스키마는 `supabase/migrations/`에, 음성 변환·OCR·AI 처리 워커는 `worker/`(Dockerfile 포함)에 있습니다. 워커에는 `FAL_KEY`와 `DEEPSEEK_API_KEY`가 필요합니다.
+
+## 4. 최근 업데이트
+
+2026-10-31
