@@ -46,6 +46,7 @@ import { useAccess } from "./AccessProvider";
 import { useConfirm } from "./ConfirmProvider";
 import { Highlight } from "./Highlight";
 import { LecturePlayer, type PlayerHandle } from "./LecturePlayer";
+import { ExportMenu, type ExportSource } from "./ExportMenu";
 import { Dropzone, MEDIA_ACCEPT, MODE_OPTIONS, MediaQueueList, useMediaQueue } from "./MediaQueue";
 import { NoteView } from "./NoteView";
 
@@ -293,7 +294,12 @@ export function LectureWorkspace(props: {
                 />
               )
             ) : chunks.length ? (
-              <TranscriptView chunks={chunks} query={query} onSeek={hasAudio ? (s) => player.current?.seek(s) : undefined} />
+              <TranscriptView
+                chunks={chunks}
+                query={query}
+                title={`${lecture.session_no}회차 ${lecture.title}`}
+                onSeek={hasAudio ? (s) => player.current?.seek(s) : undefined}
+              />
             ) : (
               <Empty
                 icon={<ScrollText />}
@@ -854,7 +860,29 @@ function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 /* ------------------------------------------------------------------ Transcript */
 
-function TranscriptView({ chunks, query, onSeek }: { chunks: Chunk[]; query: string | null; onSeek?: (sec: number) => void }) {
+function transcriptExport(chunks: Chunk[], raw: boolean, title: string): ExportSource {
+  const parts = chunks.map((c) => ({
+    time: formatTime(c.start_sec),
+    text: (raw ? c.raw_text : c.corrected_text ?? c.raw_text).trim(),
+  }));
+  const heading = `${title} — ${raw ? "대본 (Whisper 원문)" : "대본"}`;
+  return {
+    markdown: `# ${heading}\n\n${parts.map((p) => (p.time ? `**[${p.time}]** ${p.text}` : p.text)).join("\n\n")}\n`,
+    plain: `${heading}\n\n${parts.map((p) => (p.time ? `[${p.time}] ${p.text}` : p.text)).join("\n\n")}\n`,
+  };
+}
+
+function TranscriptView({
+  chunks,
+  query,
+  onSeek,
+  title,
+}: {
+  chunks: Chunk[];
+  query: string | null;
+  onSeek?: (sec: number) => void;
+  title: string;
+}) {
   const [showRaw, setShowRaw] = useState(false);
   const corrected = chunks.filter((c) => c.corrected_text).length;
   const firstHit = useRef<HTMLDivElement>(null);
@@ -872,14 +900,20 @@ function TranscriptView({ chunks, query, onSeek }: { chunks: Chunk[]; query: str
           {corrected === chunks.length ? "DeepSeek 교정 완료" : `교정 ${corrected}/${chunks.length} 구간`}
           {onSeek && " · 시간을 누르면 그 위치부터 재생돼요"}
         </p>
-        <Segmented
-          value={showRaw ? "raw" : "corrected"}
-          onChange={(v) => setShowRaw(v === "raw")}
-          options={[
-            { value: "corrected", label: "교정본" },
-            { value: "raw", label: "Whisper 원문" },
-          ]}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented
+            value={showRaw ? "raw" : "corrected"}
+            onChange={(v) => setShowRaw(v === "raw")}
+            options={[
+              { value: "corrected", label: "교정본" },
+              { value: "raw", label: "Whisper 원문" },
+            ]}
+          />
+          <ExportMenu
+            filename={`${title}_${showRaw ? "대본_원문" : "대본"}`}
+            source={() => transcriptExport(chunks, showRaw, title)}
+          />
+        </div>
       </div>
       <div className="space-y-6">
         {chunks.map((c) => {

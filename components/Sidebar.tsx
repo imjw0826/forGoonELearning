@@ -83,11 +83,8 @@ export function Sidebar({ courses }: { courses: Course[] }) {
 
 function Brand() {
   return (
-    <Link href="/" className="flex items-center gap-2 rounded-md">
-      <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-[13px] font-bold tracking-[-0.04em] text-primary-foreground">
-        Yo
-      </span>
-      <span className="text-[15px] font-semibold tracking-[-0.025em]">Yoyaku</span>
+    <Link href="/" className="rounded-md px-0.5 text-base font-semibold tracking-[-0.03em]">
+      Yoyaku
     </Link>
   );
 }
